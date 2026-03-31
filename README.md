@@ -12,15 +12,17 @@ A `pi-package` for [Pi](https://github.com/mariozechner/pi-coding-agent) that ad
 - prompts
 - themes
 
-It includes a keyboard-driven TUI browser, resource discovery across project and user scope, and command-based actions for adding, enabling, disabling, removing, and updating resources.
+It provides a keyboard-driven TUI resource browser, resource discovery across project and user scope, and command-based actions for enabling, disabling, removing, updating, and applying resources.
 
 ## Highlights
 
-- Unified browser for all major Pi resource types
+- Unified browser for major Pi resource types
 - Fast search and keyboard navigation
-- Discovery from project settings, user settings, and conventional folders
+- Discovery from project settings, user settings, conventional folders, and package sources
 - Enable/disable resources from the browser or command line
-- Add/remove package sources without editing settings manually
+- Apply built-in and custom themes from the browser or command line
+- Remove configured resources from settings
+- Add package sources via `/resource add ...`
 - Update remote packages directly from the browser
 - Argument completions for `/resource` subcommands
 
@@ -44,11 +46,23 @@ pi install https://github.com/sodie2323/pi-resource-hub
 
 ### Install from a local path
 
+From the package directory:
+
 ```bash
 pi install .
 ```
 
-Then reload Pi if needed:
+Or with an absolute path:
+
+```bash
+pi install E:/code/pi-resource-hub
+```
+
+### Important note about local installs
+
+For local paths, Pi does **not** copy the package into a separate install directory. It stores the path in Pi settings and loads the package directly from that folder.
+
+That means after changing the source during development, you usually just need:
 
 ```bash
 /reload
@@ -110,7 +124,26 @@ Examples:
 ```bash
 /resource disable package npm:@scope/some-pi-package
 /resource enable extension resource-center/index.ts
-/resource remove theme my-theme.json
+/resource remove theme my-theme
+```
+
+## Theme behavior
+
+Themes are handled a little differently from other resources.
+
+- Built-in Pi themes `dark` and `light` are discovered and shown in the browser
+- Custom themes discovered from files are also listed
+- Applying a theme updates Pi settings and switches the UI immediately
+- Themes are **applied**, not traditionally enabled/disabled
+- Custom themes can be removed from settings
+- Built-in themes cannot be removed
+
+Examples:
+
+```bash
+/resource enable theme dark
+/resource enable theme light
+/resource remove theme my-theme
 ```
 
 ## TUI controls
@@ -121,7 +154,7 @@ Examples:
 - `Up/Down` — move selection
 - `PageUp/PageDown` — jump through the list
 - `Enter` — open resource details
-- `Space` — enable/disable or apply selected resource
+- `Space` — enable/disable or apply the selected item
 - `Esc` — close or go back
 
 ### Detail view
