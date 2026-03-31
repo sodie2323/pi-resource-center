@@ -1,5 +1,9 @@
 # pi-resource-center
 
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/sodie2323/pi-resource-hub/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-hub)
+
 A `pi-package` for [Pi](https://github.com/mariozechner/pi-coding-agent) that adds a `/resource` command for browsing and managing:
 
 - packages
