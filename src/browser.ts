@@ -373,6 +373,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private getDetailActions(item: ResourceItem): DetailAction[] {
 		if (item.category === "packages") return ["toggle", "update", "remove", "back"];
+		if (item.packageSource) return ["toggle", "back"];
 		if (item.category === "themes") return ["toggle", "remove", "back"];
 		return ["toggle", "remove", "back"];
 	}
@@ -407,6 +408,9 @@ export class ResourceBrowser implements Component, Focusable {
 				}
 				return this.theme.fg("dim", "Enter to update package");
 			case "remove":
+				if (item.packageSource) {
+					return this.theme.fg("warning", "Package resources cannot be removed individually");
+				}
 				if (item.category === "themes" && !("path" in item)) {
 					return this.theme.fg("warning", "Built-in themes cannot be removed");
 				}

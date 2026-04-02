@@ -179,7 +179,14 @@ async function refreshCompletionCache(cwd: string): Promise<void> {
 
 function uniqueCompletionValues(items: ResourceItem[]): string[] {
 	return Array.from(
-		new Set(items.flatMap((item) => ("path" in item ? [item.name, item.source, item.path] : [item.name, item.source]))),
+		new Set(
+			items.flatMap((item) => {
+				const values = [item.name, item.source];
+				if (item.packageRelativePath) values.push(item.packageRelativePath);
+				if ("path" in item && item.path) values.push(item.path);
+				return values;
+			}),
+		),
 	);
 }
 
@@ -195,7 +202,7 @@ async function handleAddCommand(args: string, ctx: ExtensionCommandContext): Pro
 	const scope = scopeArg === "user" ? "user" : "project";
 	const settingsPath = await addPackageToSettings(ctx.cwd, source, scope);
 	await refreshCompletionCache(ctx.cwd);
-	ctx.ui.notify(`Added package to ${settingsPath}. Run /reload to apply.`, "info");
+	await reloadAfterSettingsChange(ctx, `Added package to ${settingsPath}`);
 }
 
 async function handleMutateCommand(
@@ -234,13 +241,17 @@ async function handleMutateCommand(
 
 	const item = matches[0]!;
 	if (action === "remove") {
+		if (item.packageSource) {
+			ctx.ui.notify(`Package resources cannot be removed individually`, "warning");
+			return;
+		}
 		if (item.category === "themes" && !("path" in item)) {
 			ctx.ui.notify(`Built-in theme ${item.name} cannot be removed`, "warning");
 			return;
 		}
 		const settingsPath = await removeResourceFromSettings(ctx.cwd, item);
 		await refreshCompletionCache(ctx.cwd);
-		ctx.ui.notify(`${item.name} removed from ${settingsPath}. Run /reload to apply.`, "info");
+		await reloadAfterSettingsChange(ctx, `${item.name} removed from ${settingsPath}`);
 		return;
 	}
 
@@ -259,7 +270,17 @@ async function handleMutateCommand(
 	item.enabled = action === "enable";
 	const settingsPath = await toggleResourceInSettings(ctx.cwd, item);
 	await refreshCompletionCache(ctx.cwd);
-	ctx.ui.notify(`${item.name}: ${action}d in ${settingsPath}. Run /reload to apply.`, "info");
+	await reloadAfterSettingsChange(ctx, `${item.name}: ${action}d in ${settingsPath}`);
+}
+
+async function reloadAfterSettingsChange(ctx: ExtensionCommandContext, message: string): Promise<void> {
+	try {
+		await ctx.reload();
+		return;
+	} catch (error: unknown) {
+		const detail = error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(`${message}. Settings saved, but reload failed: ${detail}`, "warning");
+	}
 }
 
 function findResources(
@@ -271,6 +292,7 @@ function findResources(
 	const all = category ? resources.categories[category] : Object.values(resources.categories).flat();
 	return all.filter((item) => {
 		const candidates = [item.id, item.name, item.source, item.description];
+		if (item.packageRelativePath) candidates.push(item.packageRelativePath);
 		if ("path" in item) candidates.push(item.path);
 		return candidates.some((value) => value.toLowerCase() === normalized || value.toLowerCase().includes(normalized));
 	});
@@ -317,6 +339,7 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 			done(undefined);
 			if (reloadNow) {
 				await ctx.reload();
+				return;
 			} else {
 				ctx.ui.notify("Settings saved. Run /reload when ready.", "info");
 			}
@@ -385,6 +408,10 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 		};
 		const removeItem = async (item: ResourceItem) => {
 			try {
+				if (item.packageSource) {
+					setActionMessage("remove", "warning", "Package resources cannot be removed individually");
+					return;
+				}
 				if (item.category === "themes" && !("path" in item)) {
 					setActionMessage("remove", "warning", `Built-in theme ${item.name} cannot be removed`);
 					return;

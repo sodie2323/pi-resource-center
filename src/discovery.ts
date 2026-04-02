@@ -1,342 +1,192 @@
-import { access, readdir } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
-import type { PackageSource, SettingsFile } from "./settings.js";
+import { basename, dirname, extname, relative } from "node:path";
 import {
-	getPackageSources,
-	getProjectSettingsPath,
-	getSelectedTheme,
-	getSettingPaths,
-	getUserSettingsPath,
-	isPackageSourceEnabled,
-	PROJECT_AGENT_DIR,
-	readSettingsFile,
-	USER_AGENT_DIR,
-} from "./settings.js";
-import {
-	isRemotePackageSource,
-	type FileResourceItem,
-	type ResourceCategory,
-	type ResourceIndex,
-	type ResourceItem,
-	type ResourceScope,
-	type ThemeResourceItem,
+	DefaultPackageManager,
+	SettingsManager,
+	type PathMetadata,
+	type ResolvedPaths,
+	type ResolvedResource,
+} from "@mariozechner/pi-coding-agent";
+import { isPackageSourceEnabled, type PackageSource, USER_AGENT_DIR } from "./settings.js";
+import type {
+	FileResourceItem,
+	PackageResourceCounts,
+	ResourceCategory,
+	ResourceIndex,
+	ResourceItem,
+	ResourceScope,
+	ThemeResourceItem,
 } from "./types.js";
-
-interface DiscoveryContext {
-	cwd: string;
-	projectSettings: SettingsFile | undefined;
-	userSettings: SettingsFile | undefined;
-}
 
 const RESOURCE_CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
 
 export async function discoverResources(cwd: string): Promise<ResourceIndex> {
-	const projectSettings = await readSettingsFile(getProjectSettingsPath(cwd));
-	const userSettings = await readSettingsFile(getUserSettingsPath());
-	const context: DiscoveryContext = { cwd, projectSettings, userSettings };
+	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
+	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
+	const resolvedPaths = await packageManager.resolve();
+	const projectSettings = settingsManager.getProjectSettings();
+	const userSettings = settingsManager.getGlobalSettings();
+	const selectedTheme = projectSettings.theme ?? userSettings.theme;
+	const packageCounts = buildPackageCountMap(resolvedPaths);
 
 	const categories: ResourceIndex["categories"] = {
-		packages: [],
-		skills: [],
-		extensions: [],
-		prompts: [],
-		themes: [],
+		packages: sortItems([
+			...buildPackageItems((projectSettings.packages ?? []) as PackageSource[], "project", packageCounts),
+			...buildPackageItems((userSettings.packages ?? []) as PackageSource[], "user", packageCounts),
+		]),
+		skills: mapResolvedResources("skills", resolvedPaths.skills),
+		extensions: mapResolvedResources("extensions", resolvedPaths.extensions),
+		prompts: mapResolvedResources("prompts", resolvedPaths.prompts),
+		themes: buildThemeItems(resolvedPaths.themes, selectedTheme),
 	};
-
-	const discovered = await Promise.all(RESOURCE_CATEGORIES.map(async (category) => [category, await discoverCategory(category, context)] as const));
-	for (const [category, items] of discovered) {
-		categories[category] = items;
-	}
 
 	return { categories };
 }
 
-async function discoverCategory(category: ResourceCategory, context: DiscoveryContext): Promise<ResourceItem[]> {
-	if (category === "packages") {
-		return discoverPackages(context);
-	}
-	if (category === "themes") {
-		return discoverThemes(context);
-	}
-
-	const items = new Map<string, FileResourceItem>();
-	const projectBase = resolve(context.cwd, PROJECT_AGENT_DIR, category);
-	const userBase = resolve(USER_AGENT_DIR, category);
-
-	const [projectItems, userItems] = await Promise.all([
-		discoverConventionalResources(category, projectBase, "project", "convention"),
-		discoverConventionalResources(category, userBase, "user", "convention"),
-	]);
-	for (const item of projectItems) {
-		items.set(item.id, item);
-	}
-	for (const item of userItems) {
-		items.set(item.id, item);
-	}
-	for (const path of getSettingPaths(context.projectSettings, category)) {
-		const item = createFileItem(category, path, "project", "settings");
-		items.set(item.id, item);
-	}
-	for (const path of getSettingPaths(context.userSettings, category)) {
-		const item = createFileItem(category, path, "user", "settings");
-		items.set(item.id, item);
-	}
-
-	return sortItems(Array.from(items.values()));
+function buildPackageItems(
+	packages: PackageSource[],
+	scope: ResourceScope,
+	counts: Map<string, PackageResourceCounts>,
+): ResourceItem[] {
+	return sortItems(
+		packages.map((source) => {
+			const spec = typeof source === "string" ? source : source.source;
+			const packageCounts = counts.get(toPackageKey(scope, spec));
+			const countText = packageCounts
+				? ` Contains ${packageCounts.extensions} extensions, ${packageCounts.skills} skills, ${packageCounts.prompts} prompts, and ${packageCounts.themes} themes.`
+				: "";
+			return {
+				category: "packages",
+				id: `packages:${scope}:${spec}`,
+				name: spec,
+				scope,
+				source: spec,
+				description: `${scope === "project" ? "Project" : "User"} package source.${countText}`,
+				enabled: isPackageSourceEnabled(source),
+				counts: packageCounts,
+			};
+		}),
+	);
 }
 
-async function discoverThemes(context: DiscoveryContext): Promise<ResourceItem[]> {
-	const selectedTheme = getSelectedTheme(context.projectSettings, context.userSettings);
-	const items = new Map<string, ThemeResourceItem>();
-	const projectBase = resolve(context.cwd, PROJECT_AGENT_DIR, "themes");
-	const userBase = resolve(USER_AGENT_DIR, "themes");
-
-	for (const themeName of ["dark", "light"] as const) {
-		const item = createBuiltinThemeItem(themeName, selectedTheme);
-		items.set(item.id, item);
-	}
-
-	const [projectItems, userItems] = await Promise.all([
-		discoverThemeFiles(projectBase, "project", "convention", selectedTheme),
-		discoverThemeFiles(userBase, "user", "convention", selectedTheme),
-	]);
-	for (const item of projectItems) {
-		items.set(item.id, item);
-	}
-	for (const item of userItems) {
-		items.set(item.id, item);
-	}
-	for (const path of getSettingPaths(context.projectSettings, "themes")) {
-		const item = createThemeItem(path, "project", "settings", selectedTheme);
-		items.set(item.id, item);
-	}
-	for (const path of getSettingPaths(context.userSettings, "themes")) {
-		const item = createThemeItem(path, "user", "settings", selectedTheme);
-		items.set(item.id, item);
-	}
-
-	return sortItems(Array.from(items.values()));
+function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes">>(
+	category: TCategory,
+	resources: ResolvedResource[],
+): FileResourceItem[] {
+	return sortItems(
+		resources
+			.filter((resource) => isSupportedScope(resource.metadata.scope))
+			.map((resource) => createFileItem(category, resource)),
+	);
 }
 
-async function discoverPackages(context: DiscoveryContext): Promise<ResourceItem[]> {
-	const items = await Promise.all([
-		...getPackageSources(context.projectSettings).map((source) => createPackageItem(source, "project", context)),
-		...getPackageSources(context.userSettings).map((source) => createPackageItem(source, "user", context)),
-	]);
+function buildThemeItems(resources: ResolvedResource[], selectedTheme: string | undefined): ThemeResourceItem[] {
+	const items = resources
+		.filter((resource) => isSupportedScope(resource.metadata.scope))
+		.map((resource) => createThemeItem(resource, selectedTheme));
+
+	for (const name of ["dark", "light"] as const) {
+		items.push({
+			category: "themes",
+			id: `themes:user:builtin:${name}`,
+			name,
+			scope: "user",
+			source: "builtin",
+			description: `Built-in Pi theme: ${name}`,
+			enabled: name === selectedTheme,
+			builtin: true,
+		});
+	}
+
 	return sortItems(items);
-}
-
-async function createPackageItem(
-	source: PackageSource,
-	scope: ResourceScope,
-	context: DiscoveryContext,
-): Promise<ResourceItem> {
-	const spec = typeof source === "string" ? source : source.source;
-	const packageDir = resolvePackageDir(spec, scope, context);
-	const counts = packageDir ? await discoverPackageCounts(packageDir) : undefined;
-	const sourceKind = spec.startsWith("npm:") ? "npm package" : isRemotePackageSource(spec) ? "git package" : "local package";
-	const countText = counts
-		? ` Contains ${counts.extensions} extensions, ${counts.skills} skills, ${counts.prompts} prompts, and ${counts.themes} themes.`
-		: "";
-	return {
-		category: "packages",
-		id: `packages:${scope}:${spec}`,
-		name: spec,
-		scope,
-		source: spec,
-		description: `${scope === "project" ? "Project" : "User"} ${sourceKind}.${countText}`,
-		enabled: isPackageSourceEnabled(source),
-		counts,
-	};
-}
-
-function resolvePackageDir(spec: string, scope: ResourceScope, context: DiscoveryContext): string | undefined {
-	if (isRemotePackageSource(spec)) {
-		return undefined;
-	}
-	if (isAbsolute(spec)) return spec;
-	const baseDir = scope === "project" ? context.cwd : USER_AGENT_DIR;
-	return resolve(baseDir, spec);
-}
-
-async function discoverPackageCounts(packageDir: string) {
-	const [extensions, skills, prompts, themes] = await Promise.all([
-		discoverConventionalResources("extensions", resolve(packageDir, "extensions"), "project", "package"),
-		discoverConventionalResources("skills", resolve(packageDir, "skills"), "project", "package"),
-		discoverFlatFiles(resolve(packageDir, "prompts"), "project", "package", "prompts", ".md"),
-		discoverThemeFiles(resolve(packageDir, "themes"), "project", "package", undefined),
-	]);
-
-	return {
-		extensions: extensions.length,
-		skills: skills.length,
-		prompts: prompts.length,
-		themes: themes.length,
-	};
-}
-
-async function discoverConventionalResources(
-	category: Exclude<ResourceCategory, "packages" | "themes">,
-	baseDir: string,
-	scope: ResourceScope,
-	source: string,
-): Promise<FileResourceItem[]> {
-	try {
-		if (category === "extensions") return await discoverExtensions(baseDir, scope, source);
-		if (category === "skills") return await discoverSkills(baseDir, scope, source);
-		return await discoverFlatFiles(baseDir, scope, source, category, ".md");
-	} catch {
-		return [];
-	}
-}
-
-async function discoverThemeFiles(
-	baseDir: string,
-	scope: ResourceScope,
-	source: string,
-	selectedTheme: string | undefined,
-): Promise<ThemeResourceItem[]> {
-	try {
-		const entries = await readdir(baseDir, { withFileTypes: true });
-		return entries
-			.filter((entry) => entry.isFile() && extname(entry.name) === ".json")
-			.map((entry) => createThemeItem(resolve(baseDir, entry.name), scope, source, selectedTheme));
-	} catch {
-		return [];
-	}
-}
-
-async function discoverExtensions(baseDir: string, scope: ResourceScope, source: string): Promise<FileResourceItem[]> {
-	const entries = await readdir(baseDir, { withFileTypes: true });
-	const items: FileResourceItem[] = [];
-	for (const entry of entries) {
-		const path = resolve(baseDir, entry.name);
-		if (entry.isFile() && [".ts", ".js"].includes(extname(entry.name))) {
-			items.push(createFileItem("extensions", path, scope, source));
-		}
-		if (entry.isDirectory()) {
-			const indexTs = resolve(path, "index.ts");
-			const indexJs = resolve(path, "index.js");
-			if (await pathExists(indexTs)) {
-				items.push(createFileItem("extensions", indexTs, scope, source, `${entry.name}/index.ts`));
-			}
-			if (await pathExists(indexJs)) {
-				items.push(createFileItem("extensions", indexJs, scope, source, `${entry.name}/index.js`));
-			}
-		}
-	}
-	return items;
-}
-
-async function discoverSkills(baseDir: string, scope: ResourceScope, source: string): Promise<FileResourceItem[]> {
-	const items: FileResourceItem[] = [];
-	const entries = await readdir(baseDir, { withFileTypes: true });
-	for (const entry of entries) {
-		const path = resolve(baseDir, entry.name);
-		if (entry.isFile() && extname(entry.name) === ".md") {
-			items.push(createFileItem("skills", path, scope, source));
-			continue;
-		}
-		if (!entry.isDirectory()) continue;
-		items.push(...(await discoverSkillDirectories(path, scope, source)));
-	}
-	return items;
-}
-
-async function discoverSkillDirectories(
-	baseDir: string,
-	scope: ResourceScope,
-	source: string,
-): Promise<FileResourceItem[]> {
-	const entries = await readdir(baseDir, { withFileTypes: true });
-	const skillFile = entries.find((entry) => entry.isFile() && entry.name === "SKILL.md");
-	if (skillFile) {
-		return [createFileItem("skills", resolve(baseDir, "SKILL.md"), scope, source)];
-	}
-
-	const items: FileResourceItem[] = [];
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-		items.push(...(await discoverSkillDirectories(resolve(baseDir, entry.name), scope, source)));
-	}
-	return items;
-}
-
-async function discoverFlatFiles(
-	baseDir: string,
-	scope: ResourceScope,
-	source: string,
-	category: "prompts",
-	extension: string,
-): Promise<FileResourceItem[]> {
-	try {
-		const entries = await readdir(baseDir, { withFileTypes: true });
-		return entries
-			.filter((entry) => entry.isFile() && extname(entry.name) === extension)
-			.map((entry) => createFileItem(category, resolve(baseDir, entry.name), scope, source));
-	} catch {
-		return [];
-	}
 }
 
 function createFileItem(
 	category: Exclude<ResourceCategory, "packages" | "themes">,
-	path: string,
-	scope: ResourceScope,
-	source: string,
-	nameOverride?: string,
+	resource: ResolvedResource,
 ): FileResourceItem {
-	const name = nameOverride ?? inferName(category, path);
+	const scope = resource.metadata.scope;
+	if (!isSupportedScope(scope)) {
+		throw new Error(`Unsupported resource scope: ${scope}`);
+	}
+
 	return {
 		category,
-		id: `${category}:${scope}:${path}`,
-		name,
-		path,
+		id: `${category}:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
+		name: inferName(category, resource.path),
 		scope,
-		source,
-		description: buildResourceDescription(category, scope, source, path),
-		enabled: true,
+		path: resource.path,
+		source: normalizeSource(resource.metadata),
+		description: buildResourceDescription(category, scope, resource.metadata, resource.path),
+		enabled: resource.enabled,
+		packageSource: resource.metadata.origin === "package" ? resource.metadata.source : undefined,
+		packageRelativePath: getRelativeResourcePath(resource),
 	};
 }
 
-function createThemeItem(
-	path: string,
-	scope: ResourceScope,
-	source: string,
-	selectedTheme: string | undefined,
-): ThemeResourceItem {
-	const name = inferName("themes", path);
+function createThemeItem(resource: ResolvedResource, selectedTheme: string | undefined): ThemeResourceItem {
+	const scope = resource.metadata.scope;
+	if (!isSupportedScope(scope)) {
+		throw new Error(`Unsupported resource scope: ${scope}`);
+	}
+
+	const name = basename(resource.path, extname(resource.path));
 	return {
 		category: "themes",
-		id: `themes:${scope}:${path}`,
+		id: `themes:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
 		name,
-		path,
 		scope,
-		source,
-		description: buildResourceDescription("themes", scope, source, path),
-		enabled: name === selectedTheme,
+		source: normalizeSource(resource.metadata),
+		description: buildResourceDescription("themes", scope, resource.metadata, resource.path),
+		enabled: resource.enabled && name === selectedTheme,
+		path: resource.path,
+		packageSource: resource.metadata.origin === "package" ? resource.metadata.source : undefined,
+		packageRelativePath: getRelativeResourcePath(resource),
 	};
 }
 
-function createBuiltinThemeItem(name: string, selectedTheme: string | undefined): ThemeResourceItem {
-	return {
-		category: "themes",
-		id: `themes:user:builtin:${name}`,
-		name,
-		scope: "user",
-		source: "builtin",
-		description: `Built-in Pi theme: ${name}`,
-		enabled: name === selectedTheme,
-		builtin: true,
-	};
+function buildPackageCountMap(resolvedPaths: ResolvedPaths): Map<string, PackageResourceCounts> {
+	const counts = new Map<string, PackageResourceCounts>();
+	for (const category of RESOURCE_CATEGORIES) {
+		if (category === "packages") continue;
+		for (const resource of resolvedPaths[category]) {
+			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope)) continue;
+			const key = toPackageKey(resource.metadata.scope, resource.metadata.source);
+			const current = counts.get(key) ?? { extensions: 0, skills: 0, prompts: 0, themes: 0 };
+			current[category] += 1;
+			counts.set(key, current);
+		}
+	}
+	return counts;
 }
 
-function inferName(category: Exclude<ResourceCategory, "packages">, path: string): string {
+function getRelativeResourcePath(resource: ResolvedResource): string | undefined {
+	const baseDir = resource.metadata.baseDir;
+	return baseDir ? relative(baseDir, resource.path).replace(/\\/g, "/") : undefined;
+}
+
+function toPackageKey(scope: ResourceScope, source: string): string {
+	return `${scope}:${source}`;
+}
+
+function normalizeSource(metadata: PathMetadata): string {
+	if (metadata.origin === "package") return metadata.source;
+	return metadata.source === "auto" ? "convention" : "settings";
+}
+
+function isSupportedScope(scope: PathMetadata["scope"]): scope is ResourceScope {
+	return scope === "project" || scope === "user";
+}
+
+function inferName(category: Exclude<ResourceCategory, "packages" | "themes">, path: string): string {
 	if (category === "skills" && basename(path) === "SKILL.md") {
 		return basename(dirname(path));
 	}
-	if (category === "themes") {
-		return basename(path, extname(path));
+	if (category === "extensions") {
+		const fileName = basename(path);
+		const parentFolder = basename(dirname(path));
+		if (parentFolder !== "extensions" && (fileName === "index.ts" || fileName === "index.js")) {
+			return `${parentFolder}/${fileName}`;
+		}
 	}
 	return basename(path);
 }
@@ -344,11 +194,9 @@ function inferName(category: Exclude<ResourceCategory, "packages">, path: string
 function buildResourceDescription(
 	category: Exclude<ResourceCategory, "packages">,
 	scope: ResourceScope,
-	source: string,
+	metadata: PathMetadata,
 	path: string,
 ): string {
-	const location = scope === "project" ? "project" : "user";
-	const origin = source === "settings" ? "configured in settings" : "discovered from standard locations";
 	const categoryText =
 		category === "extensions"
 			? "Extension resource"
@@ -357,16 +205,9 @@ function buildResourceDescription(
 				: category === "prompts"
 					? "Prompt resource"
 					: "Theme resource";
+	const location = scope === "project" ? "project" : "user";
+	const origin = metadata.origin === "package" ? `provided by package ${metadata.source}` : `${normalizeSource(metadata)} path`;
 	return `${categoryText} in ${location} scope, ${origin}. Path: ${path}`;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 function sortItems<T extends ResourceItem>(items: T[]): T[] {

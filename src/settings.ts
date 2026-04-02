@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
+import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import type { FileResourceItem, ResourceCategory, ResourceItem } from "./types.js";
 
 interface PackageSourceFilter {
@@ -50,11 +51,40 @@ export function getUserSettingsPath(): string {
 }
 
 export function getSettingPaths(settingsFile: SettingsFile | undefined, category: ResourceCategory): string[] {
+	return getSettingPathEntries(settingsFile, category)
+		.filter((entry) => entry.enabled)
+		.map((entry) => entry.path);
+}
+
+export function getSettingPathEntries(
+	settingsFile: SettingsFile | undefined,
+	category: ResourceCategory,
+): Array<{ path: string; enabled: boolean }> {
 	if (!settingsFile || category === "packages") return [];
 	const values = settingsFile.settings[category] ?? [];
 	return values
-		.filter((value) => typeof value === "string")
-		.map((value) => resolve(settingsFile.dir, normalizeConfigPath(value)));
+		.filter((value): value is string => typeof value === "string")
+		.map((value) => ({
+			path: resolve(settingsFile.dir, normalizeConfigPath(value)),
+			enabled: !isDisabledConfigPath(value),
+		}));
+}
+
+export function getPathResourceEnabledState(
+	settingsFile: SettingsFile | undefined,
+	category: Exclude<ResourceCategory, "packages">,
+	path: string,
+): boolean | undefined {
+	if (!settingsFile) return undefined;
+	const normalizedPath = resolve(settingsFile.dir, path);
+	let explicitState: boolean | undefined;
+	for (const value of settingsFile.settings[category] ?? []) {
+		if (typeof value !== "string") continue;
+		const entryPath = resolve(settingsFile.dir, normalizeConfigPath(value));
+		if (entryPath !== normalizedPath) continue;
+		explicitState = !isDisabledConfigPath(value);
+	}
+	return explicitState;
 }
 
 export function getPackageSources(settingsFile: SettingsFile | undefined): PackageSource[] {
@@ -80,22 +110,20 @@ export function isPackageSourceEnabled(source: PackageSource): boolean {
 
 export async function toggleResourceInSettings(cwd: string, item: ResourceItem): Promise<string> {
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsFile = (await readSettingsFile(settingsPath)) ?? {
-		path: settingsPath,
-		dir: dirname(settingsPath),
-		settings: {} as SettingsShape,
-	};
+	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 
 	if (item.category === "packages") {
-		togglePackage(settingsFile.settings, item.source, item.enabled);
+		togglePackage(settingsManager, item.scope, item.source, item.enabled);
+	} else if (item.packageSource) {
+		togglePackageResource(settingsManager, item, item.enabled);
 	} else {
 		if (item.category === "themes" || !("path" in item)) {
 			throw new Error(`Resource ${item.name} cannot be toggled via path settings`);
 		}
-		togglePathResource(settingsFile.settings, item.category, item, settingsFile.dir);
+		togglePathResource(settingsManager, item.scope, item.category, item, dirname(settingsPath));
 	}
 
-	await saveSettingsFile(settingsPath, settingsFile.settings);
+	await settingsManager.flush();
 	return settingsPath;
 }
 
@@ -110,6 +138,9 @@ export async function removeResourceFromSettings(cwd: string, item: ResourceItem
 	if (item.category === "packages") {
 		removePackage(settingsFile.settings, item.source);
 	} else {
+		if (item.packageSource) {
+			throw new Error(`Package resources cannot be removed individually`);
+		}
 		if (item.category === "themes" || !("path" in item)) {
 			throw new Error(`Resource ${item.name} cannot be removed via path settings`);
 		}
@@ -143,27 +174,28 @@ export async function addPackageToSettings(
 	scope: "project" | "user" = "project",
 ): Promise<string> {
 	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsFile = (await readSettingsFile(settingsPath)) ?? {
-		path: settingsPath,
-		dir: dirname(settingsPath),
-		settings: {} as SettingsShape,
-	};
-
-	const packages = [...(settingsFile.settings.packages ?? [])];
+	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
+	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+	const packages = [...(settings.packages ?? [])] as PackageSource[];
 	const index = packages.findIndex((entry) => (typeof entry === "string" ? entry : entry.source) === source);
 	if (index === -1) {
 		packages.push(source);
 	} else {
 		packages[index] = source;
 	}
-	settingsFile.settings.packages = packages;
-
-	await saveSettingsFile(settingsPath, settingsFile.settings);
+	setPackagesForScope(settingsManager, scope, packages);
+	await settingsManager.flush();
 	return settingsPath;
 }
 
-function togglePackage(settings: SettingsShape, source: string, enabled: boolean): void {
-	const packages = [...(settings.packages ?? [])];
+function togglePackage(
+	settingsManager: SettingsManager,
+	scope: "project" | "user",
+	source: string,
+	enabled: boolean,
+): void {
+	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+	const packages = [...(settings.packages ?? [])] as PackageSource[];
 	const index = packages.findIndex((entry) => (typeof entry === "string" ? entry : entry.source) === source);
 
 	if (enabled) {
@@ -187,16 +219,60 @@ function togglePackage(settings: SettingsShape, source: string, enabled: boolean
 		}
 	}
 
-	settings.packages = packages.length > 0 ? packages : undefined;
+	setPackagesForScope(settingsManager, scope, packages.length > 0 ? packages : []);
 }
 
 function togglePathResource(
-	settings: SettingsShape,
+	settingsManager: SettingsManager,
+	scope: "project" | "user",
 	category: Exclude<ResourceCategory, "packages" | "themes">,
 	item: FileResourceItem,
 	settingsDir: string,
 ): void {
-	setPathResourceEnabled(settings, category, item.path, settingsDir, item.enabled);
+	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+	const current = [...(settings[category] ?? [])];
+	const normalizedPath = resolve(settingsDir, normalizeConfigPath(item.path));
+	const filtered = current.filter((entry) => resolve(settingsDir, normalizeConfigPath(entry)) !== normalizedPath);
+	const relativePath = toSettingsPath(item.path, settingsDir);
+	filtered.push(item.enabled ? `+${relativePath}` : `-${relativePath}`);
+	setPathEntriesForScope(settingsManager, scope, category, filtered);
+}
+
+function togglePackageResource(
+	settingsManager: SettingsManager,
+	item: Exclude<ResourceItem, { category: "packages" }>,
+	enabled: boolean,
+): void {
+	if (!item.packageSource) {
+		throw new Error(`Resource ${item.name} is not backed by a package`);
+	}
+	const settings = item.scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+	const packages = [...(settings.packages ?? [])] as PackageSource[];
+	const index = packages.findIndex((entry) => (typeof entry === "string" ? entry : entry.source) === item.packageSource);
+	if (index === -1) {
+		throw new Error(`Package source not found in settings: ${item.packageSource}`);
+	}
+
+	let pkg = packages[index]!;
+	if (typeof pkg === "string") {
+		pkg = { source: pkg };
+		packages[index] = pkg;
+	}
+
+	const category = item.category;
+	const current = [...(pkg[category] ?? [])];
+	const pattern = item.packageRelativePath ?? inferPackageRelativePath(item);
+	const updated = current.filter((entry) => normalizeConfigPath(entry) !== normalizeConfigPath(pattern));
+	updated.push(enabled ? `+${pattern}` : `-${pattern}`);
+	pkg[category] = updated.length > 0 ? updated : undefined;
+
+	const hasFilters = ["extensions", "skills", "prompts", "themes"].some(
+		(key) => (pkg as Record<string, unknown>)[key] !== undefined,
+	);
+	if (!hasFilters) {
+		packages[index] = pkg.source;
+	}
+	setPackagesForScope(settingsManager, item.scope, packages.length > 0 ? packages : []);
 }
 
 function removePackage(settings: SettingsShape, source: string): void {
@@ -212,22 +288,9 @@ function removePathResource(
 	item: FileResourceItem,
 	settingsDir: string,
 ): void {
-	setPathResourceEnabled(settings, category, item.path, settingsDir, false);
-}
-
-function setPathResourceEnabled(
-	settings: SettingsShape,
-	category: Exclude<ResourceCategory, "packages" | "themes">,
-	path: string,
-	settingsDir: string,
-	enabled: boolean,
-): void {
 	const current = [...(settings[category] ?? [])];
-	const normalizedPath = resolve(settingsDir, normalizeConfigPath(path));
+	const normalizedPath = resolve(settingsDir, normalizeConfigPath(item.path));
 	const filtered = current.filter((entry) => resolve(settingsDir, normalizeConfigPath(entry)) !== normalizedPath);
-	if (enabled) {
-		filtered.push(path);
-	}
 	settings[category] = filtered.length > 0 ? filtered : undefined;
 }
 
@@ -236,13 +299,70 @@ async function saveSettingsFile(settingsPath: string, settings: SettingsShape): 
 	await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
 
+function setPackagesForScope(settingsManager: SettingsManager, scope: "project" | "user", packages: PackageSource[]): void {
+	if (scope === "project") {
+		settingsManager.setProjectPackages(packages);
+	} else {
+		settingsManager.setPackages(packages);
+	}
+}
+
+function setPathEntriesForScope(
+	settingsManager: SettingsManager,
+	scope: "project" | "user",
+	category: Exclude<ResourceCategory, "packages" | "themes">,
+	paths: string[],
+): void {
+	if (scope === "project") {
+		if (category === "extensions") {
+			settingsManager.setProjectExtensionPaths(paths);
+		} else if (category === "skills") {
+			settingsManager.setProjectSkillPaths(paths);
+		} else {
+			settingsManager.setProjectPromptTemplatePaths(paths);
+		}
+		return;
+	}
+
+	if (category === "extensions") {
+		settingsManager.setExtensionPaths(paths);
+	} else if (category === "skills") {
+		settingsManager.setSkillPaths(paths);
+	} else {
+		settingsManager.setPromptTemplatePaths(paths);
+	}
+}
+
 function isExplicitlyDisabled(value: string[] | undefined): boolean {
 	return Array.isArray(value) && value.length === 0;
 }
 
+function isDisabledConfigPath(value: string): boolean {
+	return value.startsWith("-") || value.startsWith("!");
+}
+
+function inferPackageRelativePath(item: Exclude<ResourceItem, { category: "packages" }>): string {
+	if (item.packageRelativePath) return item.packageRelativePath;
+	if ("path" in item && item.path) {
+		if (item.category === "themes") return basename(item.path);
+		if (item.category === "skills" && basename(item.path) === "SKILL.md") {
+			return basename(dirname(item.path));
+		}
+		return basename(item.path);
+	}
+	throw new Error(`Could not infer package-relative path for ${item.name}`);
+}
+
 function normalizeConfigPath(value: string): string {
 	if (value.startsWith("+") || value.startsWith("-") || value.startsWith("!")) {
-		return value.slice(1);
+		return value.slice(1).replace(/\\/g, "/");
 	}
-	return value;
+	return value.replace(/\\/g, "/");
+}
+
+function toSettingsPath(path: string, settingsDir: string): string {
+	const resolvedPath = resolve(path);
+	const relativePath = relative(settingsDir, resolvedPath);
+	const settingsPath = relativePath && !relativePath.startsWith("..") ? relativePath : resolvedPath;
+	return settingsPath.replace(/\\/g, "/");
 }
