@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-hub)
 
-A `pi-package` for [Pi](https://github.com/mariozechner/pi-coding-agent) that adds a `/resource` command for browsing and managing:
+A `pi-package` for [Pi](https://github.com/mariozechner/pi-coding-agent) that adds a `/resource` command for browsing, discovering, and managing:
 
 - packages
 - skills
@@ -16,9 +16,9 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 
 ## Highlights
 
-- Unified browser for major Pi resource types
-- Fast search and keyboard navigation
-- Discovery from project settings, user settings, conventional folders, and package sources
+- Unified browser for packages, skills, extensions, prompts, and themes
+- Fast search and keyboard navigation in a dedicated TUI
+- Discovery across project settings, user settings, conventional folders, and package sources
 - Enable/disable top-level resources and package-contained resources from the browser or command line
 - Apply built-in and custom themes from the browser or command line
 - Remove configured resources from settings
@@ -26,7 +26,7 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - Update remote packages directly from the browser
 - Argument completions for `/resource` subcommands
 
-## Command
+## Quick start
 
 This package registers:
 
@@ -68,6 +68,8 @@ That means after changing the source during development, you usually just need:
 /reload
 ```
 
+If you are iterating on this package itself, local install + `/reload` is the fastest workflow.
+
 ## Usage
 
 ### Open the browser
@@ -86,6 +88,14 @@ That means after changing the source during development, you usually just need:
 ```bash
 /resource sync
 ```
+
+### Core command groups
+
+- `add` — register a package source in project or user settings
+- `enable` / `disable` — toggle packages or resources
+- `remove` — remove configured resources from settings
+- `expose` / `hide` — show or hide package-contained resources in top-level categories
+- `sync` — re-run discovery and refresh the current resource index
 
 ### Add a package source
 
@@ -243,6 +253,12 @@ Peer dependencies:
 
 - `@mariozechner/pi-coding-agent`
 - `@mariozechner/pi-tui`
+
+## Notes
+
+- The package name is `pi-resource-center`
+- The repository is hosted at `sodie2323/pi-resource-hub`
+- The `/resource` browser defaults to the `packages` category
 
 ## License
 

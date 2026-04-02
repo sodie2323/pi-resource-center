@@ -318,7 +318,12 @@ async function handleMutateCommand(
 	item.enabled = action === "enable";
 	const settingsPath = await toggleResourceInSettings(ctx.cwd, item);
 	await refreshCompletionCache(ctx.cwd);
-	await reloadAfterSettingsChange(ctx, `${action === "enable" ? "Enabled" : "Disabled"} ${item.name} · ${settingsPath}`);
+	await reloadAfterSettingsChange(
+		ctx,
+		item.category === "packages"
+			? `${action === "enable" ? "Enabled" : "Disabled"} all resources in package ${item.name} · ${settingsPath}`
+			: `${action === "enable" ? "Enabled" : "Disabled"} ${item.name} · ${settingsPath}`,
+	);
 }
 
 async function handleExposureCommand(
@@ -491,7 +496,13 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 				const settingsPath = await toggleResourceInSettings(ctx.cwd, item);
 				hasPendingChanges = true;
 				await refreshBrowser();
-				setActionMessage("toggle", "info", `${item.enabled ? "Enabled" : "Disabled"} ${item.name} · ${settingsPath}`);
+				setActionMessage(
+					"toggle",
+					"info",
+					item.category === "packages"
+						? `${item.enabled ? "Enabled" : "Disabled"} all resources in package ${item.name} · ${settingsPath}`
+						: `${item.enabled ? "Enabled" : "Disabled"} ${item.name} · ${settingsPath}`,
+				);
 			} catch (error: unknown) {
 				if (item.category !== "themes") {
 					item.enabled = !item.enabled;
