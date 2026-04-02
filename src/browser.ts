@@ -185,7 +185,7 @@ export class ResourceBrowser implements Component, Focusable {
 				: this.mode === "packageGroups"
 					? this.getPackageCategories().length
 					: this.filteredItems.length;
-		const left = this.theme.fg("accent", this.theme.bold("Resources"));
+		const left = this.theme.fg("accent", this.theme.bold(this.getHeaderTitle()));
 		const right = this.theme.fg("muted", `${count} result${count === 1 ? "" : "s"}`);
 		const spacing = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
 		return [truncateToWidth(`${left}${" ".repeat(spacing)}${right}`, width, "")];
@@ -204,7 +204,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private renderSearch(width: number): string[] {
-		const inputWidth = Math.max(1, width - 10);
+		const inputWidth = Math.max(1, width - 8);
 		const inputLines = this.searchInput.render(inputWidth);
 		const input = inputLines[0] ?? "";
 		return [truncateToWidth(`${this.theme.fg("muted", "Search:")} ${input}`, width, "…")];
@@ -266,12 +266,7 @@ export class ResourceBrowser implements Component, Focusable {
 		if (!item) return [this.theme.fg("muted", "Nothing selected")];
 
 		const enabledText = item.enabled ? this.theme.fg("success", "on") : this.theme.fg("dim", "off");
-		const title = this.theme.fg("accent", this.theme.bold(`Resource Details: ${item.name}`));
-		const hint = this.theme.fg("dim", "Esc to go back");
-		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
 		const lines = [
-			truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, "…"),
-			"",
 			truncateToWidth(`${this.theme.fg("muted", "Category")}: ${CATEGORY_LABELS[item.category]}`, width, "…"),
 			truncateToWidth(`${this.theme.fg("muted", "Enabled")}: ${enabledText}`, width, "…"),
 			truncateToWidth(`${this.theme.fg("muted", "Scope")}: ${item.scope}`, width, "…"),
@@ -317,10 +312,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private renderPackageGroupsPage(width: number): string[] {
 		const pkg = this.packageItem;
 		if (!pkg || pkg.category !== "packages") return [this.theme.fg("muted", "No package selected")];
-		const title = this.theme.fg("accent", this.theme.bold(`Package Contents: ${pkg.name}`));
-		const hint = this.theme.fg("dim", "Esc to go back");
-		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
-		const lines = [truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, "…"), ""];
+		const lines = [""];
 
 		for (const [index, category] of this.getPackageCategories().entries()) {
 			const items = this.getPackageContainedItems(pkg, category);
@@ -337,12 +329,9 @@ export class ResourceBrowser implements Component, Focusable {
 	private renderPackageItemsPage(width: number): string[] {
 		const pkg = this.packageItem;
 		if (!pkg || pkg.category !== "packages") return [this.theme.fg("muted", "No package selected")];
-		const title = this.theme.fg("accent", this.theme.bold(`${pkg.name} · ${CATEGORY_LABELS[this.packageContentsCategory]}`));
-		const hint = this.theme.fg("dim", "Esc to go back");
-		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
-		const lines = [truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, "…"), ""];
+		const lines = [""];
 		if (this.packageContentsItems.length === 0) {
-			lines.push(this.theme.fg("muted", "This package doesn't provide anything in this category"));
+			lines.push(this.theme.fg("muted", this.getEmptyPackageCategoryMessage(this.packageContentsCategory)));
 			return lines;
 		}
 
@@ -358,30 +347,33 @@ export class ResourceBrowser implements Component, Focusable {
 					? this.theme.fg("accent", this.theme.bold("[shown]"))
 					: this.theme.fg("dim", "[hidden]")
 				: "";
+			const primary = `${marker} ${toggle}${exposure ? ` ${exposure}` : ""} ${item.name}`;
 			const label = item.packageRelativePath ?? ("path" in item ? item.path : item.name);
-			let line = truncateToWidth(`${marker} ${toggle} ${item.name} ${exposure}${exposure ? " " : ""}${this.theme.fg("dim", `· ${label}`)}`, width, "…");
-			if (selected) line = this.theme.bg("selectedBg", line);
-			else line = this.theme.fg("text", line);
-			lines.push(line);
+			let primaryLine = truncateToWidth(primary, width, "…");
+			let secondaryLine = truncateToWidth(`  ${this.theme.fg("dim", label)}`, width, "…");
+			if (selected) {
+				primaryLine = this.theme.bg("selectedBg", primaryLine);
+				secondaryLine = this.theme.bg("selectedBg", secondaryLine);
+			} else {
+				primaryLine = this.theme.fg("text", primaryLine);
+			}
+			lines.push(primaryLine);
+			lines.push(secondaryLine);
 		}
 
 		return lines;
 	}
 
 	private renderFooter(width: number): string {
-		return truncateToWidth(
-			this.theme.fg("dim", "Left/Right switch tabs · Up/Down move · Space toggle/apply · Enter open details · Esc close"),
-			width,
-			"…",
-		);
+		return truncateToWidth(this.theme.fg("dim", "Tab switch · ↑↓ move · Space toggle · Enter details · Esc close"), width, "…");
 	}
 
 	private renderDetailFooter(width: number): string {
-		return truncateToWidth(this.theme.fg("dim", "Up/Down move · Enter confirm · Esc back"), width, "…");
+		return truncateToWidth(this.theme.fg("dim", "↑↓ move · Enter confirm · Esc back"), width, "…");
 	}
 
 	private renderPackageFooter(width: number): string {
-		return truncateToWidth(this.theme.fg("dim", "Up/Down move · Enter open details · Space toggle/apply · Esc back"), width, "…");
+		return truncateToWidth(this.theme.fg("dim", "↑↓ move · Enter details · Space toggle · Esc back"), width, "…");
 	}
 
 	private renderDescriptionBlock(text: string, width: number): string[] {
@@ -568,6 +560,9 @@ export class ResourceBrowser implements Component, Focusable {
 				if (item.category !== "packages") return undefined;
 				return this.theme.fg("dim", "Browse resources in this package");
 			case "toggle":
+				if (item.category === "packages") {
+					return this.theme.fg("dim", item.enabled ? "Disable all resources in this package" : "Enable all resources in this package");
+				}
 				if (item.category === "themes") {
 					return item.enabled ? this.theme.fg("success", "Theme is currently active") : this.theme.fg("dim", "Apply this theme");
 				}
@@ -605,6 +600,9 @@ export class ResourceBrowser implements Component, Focusable {
 			case "manage":
 				return this.theme.fg("accent", "Browse Package Contents");
 			case "toggle":
+				if (item.category === "packages") {
+					return item.enabled ? this.theme.fg("warning", "Disable All Contents") : this.theme.fg("success", "Enable All Contents");
+				}
 				if (item.category === "themes") {
 					return item.enabled ? this.theme.fg("success", "Active") : this.theme.fg("accent", "Apply");
 				}
@@ -760,6 +758,36 @@ export class ResourceBrowser implements Component, Focusable {
 		const items = this.resources.categories[category];
 		if (category === "packages" || category === "themes") return items;
 		return items.filter((item) => !item.packageSource || item.exposed);
+	}
+
+	private getHeaderTitle(): string {
+		if (this.mode === "detail" && this.detailItem) return this.getDetailTitle(this.detailItem);
+		if (this.mode === "packageGroups" && this.packageItem?.category === "packages") {
+			return `Packages / ${this.packageItem.name} / Contents`;
+		}
+		if (this.mode === "packageItems" && this.packageItem?.category === "packages") {
+			return `Packages / ${this.packageItem.name} / ${CATEGORY_LABELS[this.packageContentsCategory]}`;
+		}
+		return `Resources / ${CATEGORY_LABELS[this.category]}`;
+	}
+
+	private getDetailTitle(item: ResourceItem): string {
+		if (item.category === "packages") return `Packages / ${item.name}`;
+		if (item.packageSource) return `Packages / ${item.packageSource} / ${CATEGORY_LABELS[item.category]} / ${item.name}`;
+		return `Resources / ${CATEGORY_LABELS[item.category]} / ${item.name}`;
+	}
+
+	private getEmptyPackageCategoryMessage(category: PackageContentCategory): string {
+		switch (category) {
+			case "extensions":
+				return "This package doesn't provide any extensions";
+			case "skills":
+				return "This package doesn't provide any skills";
+			case "prompts":
+				return "This package doesn't provide any prompts";
+			case "themes":
+				return "This package doesn't provide any themes";
+		}
 	}
 
 	private getPackageCategories(): PackageContentCategory[] {
