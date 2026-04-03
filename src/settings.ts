@@ -49,8 +49,14 @@ export async function readSettingsFile(path: string): Promise<SettingsFile | und
 		const raw = await readFile(path, "utf8");
 		const parsed = JSON.parse(raw) as SettingsShape;
 		return { path, dir: dirname(path), settings: parsed };
-	} catch {
-		return undefined;
+	} catch (error: unknown) {
+		if (isFileNotFoundError(error)) {
+			return undefined;
+		}
+		if (error instanceof SyntaxError) {
+			throw new Error(`Failed to parse settings file ${path}: ${error.message}`);
+		}
+		throw new Error(`Failed to read settings file ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -130,43 +136,51 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem):
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 
-	if (item.category === "packages") {
-		togglePackage(settingsManager, item.scope, item.source, item.enabled);
-	} else if (item.packageSource) {
-		togglePackageResource(settingsManager, item, item.enabled);
-	} else {
-		if (item.category === "themes" || !("path" in item)) {
-			throw new Error(`Resource ${item.name} cannot be toggled via path settings`);
+	try {
+		if (item.category === "packages") {
+			togglePackage(settingsManager, item.scope, item.source, item.enabled);
+		} else if (item.packageSource) {
+			togglePackageResource(settingsManager, item, item.enabled);
+		} else {
+			if (item.category === "themes" || !("path" in item)) {
+				throw new Error(`Resource ${item.name} cannot be toggled via path settings`);
+			}
+			togglePathResource(settingsManager, item.scope, item.category, item, dirname(settingsPath));
 		}
-		togglePathResource(settingsManager, item.scope, item.category, item, dirname(settingsPath));
-	}
 
-	await settingsManager.flush();
-	return settingsPath;
+		await settingsManager.flush();
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to toggle ${describeResource(item)} in ${item.scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
+	}
 }
 
 export async function removeResourceFromSettings(cwd: string, item: ResourceItem): Promise<string> {
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsFile = (await readSettingsFile(settingsPath)) ?? {
-		path: settingsPath,
-		dir: dirname(settingsPath),
-		settings: {} as SettingsShape,
-	};
+	try {
+		const settingsFile = (await readSettingsFile(settingsPath)) ?? {
+			path: settingsPath,
+			dir: dirname(settingsPath),
+			settings: {} as SettingsShape,
+		};
 
-	if (item.category === "packages") {
-		removePackage(settingsFile.settings, item.source);
-	} else {
-		if (item.packageSource) {
-			throw new Error(`Package resources cannot be removed individually`);
+		if (item.category === "packages") {
+			removePackage(settingsFile.settings, item.source);
+		} else {
+			if (item.packageSource) {
+				throw new Error(`Package resources cannot be removed individually`);
+			}
+			if (item.category === "themes" || !("path" in item)) {
+				throw new Error(`Resource ${item.name} cannot be removed via path settings`);
+			}
+			removePathResource(settingsFile.settings, item.category, item, settingsFile.dir);
 		}
-		if (item.category === "themes" || !("path" in item)) {
-			throw new Error(`Resource ${item.name} cannot be removed via path settings`);
-		}
-		removePathResource(settingsFile.settings, item.category, item, settingsFile.dir);
+
+		await saveSettingsFile(settingsPath, settingsFile.settings);
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to remove ${describeResource(item)} from ${item.scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
-
-	await saveSettingsFile(settingsPath, settingsFile.settings);
-	return settingsPath;
 }
 
 export async function setActiveTheme(
@@ -175,15 +189,19 @@ export async function setActiveTheme(
 	scope: "project" | "user" = "project",
 ): Promise<string> {
 	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsFile = (await readSettingsFile(settingsPath)) ?? {
-		path: settingsPath,
-		dir: dirname(settingsPath),
-		settings: {} as SettingsShape,
-	};
+	try {
+		const settingsFile = (await readSettingsFile(settingsPath)) ?? {
+			path: settingsPath,
+			dir: dirname(settingsPath),
+			settings: {} as SettingsShape,
+		};
 
-	settingsFile.settings.theme = themeName;
-	await saveSettingsFile(settingsPath, settingsFile.settings);
-	return settingsPath;
+		settingsFile.settings.theme = themeName;
+		await saveSettingsFile(settingsPath, settingsFile.settings);
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to set active theme ${themeName} in ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
+	}
 }
 
 export async function addPackageToSettings(
@@ -193,25 +211,33 @@ export async function addPackageToSettings(
 ): Promise<string> {
 	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
-	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
-	const packages = [...(settings.packages ?? [])] as PackageSource[];
-	const index = packages.findIndex((entry) => (typeof entry === "string" ? entry : entry.source) === source);
-	if (index === -1) {
-		packages.push(source);
-	} else {
-		packages[index] = source;
+	try {
+		const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+		const packages = [...(settings.packages ?? [])] as PackageSource[];
+		const index = packages.findIndex((entry) => (typeof entry === "string" ? entry : entry.source) === source);
+		if (index === -1) {
+			packages.push(source);
+		} else {
+			packages[index] = source;
+		}
+		setPackagesForScope(settingsManager, scope, packages);
+		await settingsManager.flush();
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to add package source ${source} to ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
-	setPackagesForScope(settingsManager, scope, packages);
-	await settingsManager.flush();
-	return settingsPath;
 }
 
 export async function getExposedResources(cwd: string): Promise<ExposedResourceEntry[]> {
-	const [projectState, userState] = await Promise.all([
-		readResourceHubState(getResourceHubStatePath("project", cwd)),
-		readResourceHubState(getResourceHubStatePath("user", cwd)),
-	]);
-	return [...(projectState.exposedResources ?? []), ...(userState.exposedResources ?? [])];
+	try {
+		const [projectState, userState] = await Promise.all([
+			readResourceHubState(getResourceHubStatePath("project", cwd)),
+			readResourceHubState(getResourceHubStatePath("user", cwd)),
+		]);
+		return [...(projectState.exposedResources ?? []), ...(userState.exposedResources ?? [])];
+	} catch (error: unknown) {
+		throw new Error(`Failed to read exposed resources for cwd ${cwd}: ${toErrorMessage(error)}`);
+	}
 }
 
 export async function setResourceExposed(cwd: string, item: ResourceItem, exposed: boolean): Promise<string> {
@@ -220,16 +246,20 @@ export async function setResourceExposed(cwd: string, item: ResourceItem, expose
 	}
 	const path = item.packageRelativePath ?? inferPackageRelativePath(item);
 	const statePath = getResourceHubStatePath(item.scope, cwd);
-	const state = await readResourceHubState(statePath);
-	const entries = [...(state.exposedResources ?? [])];
-	const nextEntries = entries.filter(
-		(entry) => !(entry.category === item.category && entry.package === item.packageSource && normalizeConfigPath(entry.path) === normalizeConfigPath(path)),
-	);
-	if (exposed) {
-		nextEntries.push({ scope: item.scope, category: item.category, package: item.packageSource, path });
+	try {
+		const state = await readResourceHubState(statePath);
+		const entries = [...(state.exposedResources ?? [])];
+		const nextEntries = entries.filter(
+			(entry) => !(entry.category === item.category && entry.package === item.packageSource && normalizeConfigPath(entry.path) === normalizeConfigPath(path)),
+		);
+		if (exposed) {
+			nextEntries.push({ scope: item.scope, category: item.category, package: item.packageSource, path });
+		}
+		await saveResourceHubState(statePath, { exposedResources: nextEntries.length > 0 ? nextEntries : undefined });
+		return statePath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to ${exposed ? "expose" : "hide"} ${describeResource(item)} in ${item.scope} scope via ${statePath}: ${toErrorMessage(error)}`);
 	}
-	await saveResourceHubState(statePath, { exposedResources: nextEntries.length > 0 ? nextEntries : undefined });
-	return statePath;
 }
 
 function togglePackage(
@@ -347,14 +377,35 @@ async function readResourceHubState(path: string): Promise<ResourceHubState> {
 	try {
 		const raw = await readFile(path, "utf8");
 		return JSON.parse(raw) as ResourceHubState;
-	} catch {
-		return {};
+	} catch (error: unknown) {
+		if (isFileNotFoundError(error)) {
+			return {};
+		}
+		if (error instanceof SyntaxError) {
+			throw new Error(`Failed to parse resource hub state ${path}: ${error.message}`);
+		}
+		throw new Error(`Failed to read resource hub state ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
 async function saveResourceHubState(path: string, state: ResourceHubState): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function toErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function describeResource(item: ResourceItem): string {
+	if (item.category === "packages") return `package ${item.source}`;
+	if (item.packageSource) return `${item.category.slice(0, -1)} ${item.name} from package ${item.packageSource}`;
+	if ("path" in item && item.path) return `${item.category.slice(0, -1)} ${item.name} (${item.path})`;
+	return `${item.category.slice(0, -1)} ${item.name}`;
 }
 
 function setPackagesForScope(settingsManager: SettingsManager, scope: "project" | "user", packages: PackageSource[]): void {

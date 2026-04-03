@@ -1,4 +1,5 @@
-import { basename, dirname, extname, relative } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, extname, relative, resolve } from "node:path";
 import {
 	DefaultPackageManager,
 	SettingsManager,
@@ -9,6 +10,7 @@ import {
 import { getExposedResources, isPackageSourceEnabled, type PackageSource, USER_AGENT_DIR } from "./settings.js";
 import type {
 	FileResourceItem,
+	PackageEnabledSummary,
 	PackageResourceCounts,
 	ResourceCategory,
 	ResourceIndex,
@@ -27,13 +29,16 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 	const userSettings = settingsManager.getGlobalSettings();
 	const selectedTheme = projectSettings.theme ?? userSettings.theme;
 	const packageCounts = buildPackageCountMap(resolvedPaths);
+	const packageEnabledCounts = buildPackageEnabledSummaryMap(resolvedPaths, selectedTheme);
+	const packageDescriptions = await buildPackageDescriptionMap(resolvedPaths);
 	const exposedResources = await getExposedResources(cwd);
+	const [projectPackages, userPackages] = await Promise.all([
+		buildPackageItems((projectSettings.packages ?? []) as PackageSource[], "project", packageCounts, packageEnabledCounts, packageDescriptions),
+		buildPackageItems((userSettings.packages ?? []) as PackageSource[], "user", packageCounts, packageEnabledCounts, packageDescriptions),
+	]);
 
 	const categories: ResourceIndex["categories"] = {
-		packages: sortItems([
-			...buildPackageItems((projectSettings.packages ?? []) as PackageSource[], "project", packageCounts),
-			...buildPackageItems((userSettings.packages ?? []) as PackageSource[], "user", packageCounts),
-		]),
+		packages: sortItems([...projectPackages, ...userPackages]),
 		skills: mapResolvedResources("skills", resolvedPaths.skills, exposedResources),
 		extensions: mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources),
 		prompts: mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources),
@@ -43,27 +48,31 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 	return { categories };
 }
 
-function buildPackageItems(
+async function buildPackageItems(
 	packages: PackageSource[],
 	scope: ResourceScope,
 	counts: Map<string, PackageResourceCounts>,
-): ResourceItem[] {
+	enabledSummaries: Map<string, PackageEnabledSummary>,
+	packageDescriptions: Map<string, string>,
+): Promise<ResourceItem[]> {
 	return sortItems(
 		packages.map((source) => {
 			const spec = typeof source === "string" ? source : source.source;
 			const packageCounts = counts.get(toPackageKey(scope, spec));
-			const countText = packageCounts
-				? ` Contains ${packageCounts.extensions} extensions, ${packageCounts.skills} skills, ${packageCounts.prompts} prompts, and ${packageCounts.themes} themes.`
-				: "";
+			const enabledSummary = enabledSummaries.get(toPackageKey(scope, spec));
+			const packageDescription = packageDescriptions.get(toPackageKey(scope, spec));
 			return {
 				category: "packages",
 				id: `packages:${scope}:${spec}`,
 				name: spec,
 				scope,
 				source: spec,
-				description: `${scope === "project" ? "Project" : "User"} package source.${countText}`,
+				description:
+					packageDescription ??
+					"No package description found. Add a `description` field to this package's package.json.",
 				enabled: isPackageSourceEnabled(source),
 				counts: packageCounts,
+				enabledSummary,
 			};
 		}),
 	);
@@ -173,6 +182,60 @@ function buildPackageCountMap(resolvedPaths: ResolvedPaths): Map<string, Package
 		}
 	}
 	return counts;
+}
+
+function buildPackageEnabledSummaryMap(
+	resolvedPaths: ResolvedPaths,
+	selectedTheme: string | undefined,
+): Map<string, PackageEnabledSummary> {
+	const summaries = new Map<string, PackageEnabledSummary>();
+	for (const category of RESOURCE_CATEGORIES) {
+		if (category === "packages") continue;
+		for (const resource of resolvedPaths[category]) {
+			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope)) continue;
+			const key = toPackageKey(resource.metadata.scope, resource.metadata.source);
+			const current = summaries.get(key) ?? { enabledCount: 0, totalCount: 0 };
+			current.totalCount += 1;
+			const isEnabled = category === "themes"
+				? basename(resource.path, extname(resource.path)) === selectedTheme
+				: resource.enabled;
+			if (isEnabled) {
+				current.enabledCount += 1;
+			}
+			summaries.set(key, current);
+		}
+	}
+	return summaries;
+}
+
+async function buildPackageDescriptionMap(resolvedPaths: ResolvedPaths): Promise<Map<string, string>> {
+	const packageDirs = new Map<string, string>();
+	for (const category of RESOURCE_CATEGORIES) {
+		if (category === "packages") continue;
+		for (const resource of resolvedPaths[category]) {
+			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope) || !resource.metadata.baseDir) continue;
+			packageDirs.set(toPackageKey(resource.metadata.scope, resource.metadata.source), resource.metadata.baseDir);
+		}
+	}
+
+	const descriptions = new Map<string, string>();
+	await Promise.all(
+		Array.from(packageDirs.entries()).map(async ([key, baseDir]) => {
+			const description = await readPackageDescription(resolve(baseDir, "package.json"));
+			if (description) descriptions.set(key, description);
+		}),
+	);
+	return descriptions;
+}
+
+async function readPackageDescription(packageJsonPath: string): Promise<string | undefined> {
+	try {
+		const raw = await readFile(packageJsonPath, "utf8");
+		const parsed = JSON.parse(raw) as { description?: unknown };
+		return typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function getRelativeResourcePath(resource: ResolvedResource): string | undefined {

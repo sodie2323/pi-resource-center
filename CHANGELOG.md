@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2026-04-03
+
+### Changed
+- Improved resource browser information hierarchy and reduced duplicated path/source details
+- Added package-aware search separation between the main list and package contents views
+- Added package preview interactions, lightweight caching, and precomputed package enablement summaries for better performance
+- Improved error reporting for settings/resource operations with more contextual details
+- Package descriptions now prefer `package.json.description`, with a fallback hint when missing
+
 ## [0.1.0] - 2026-03-31
 
 ### Added

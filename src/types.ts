@@ -9,6 +9,11 @@ export interface PackageResourceCounts {
 	themes: number;
 }
 
+export interface PackageEnabledSummary {
+	enabledCount: number;
+	totalCount: number;
+}
+
 export interface PackageResourceItem {
 	category: "packages";
 	id: string;
@@ -18,6 +23,7 @@ export interface PackageResourceItem {
 	description: string;
 	enabled: boolean;
 	counts?: PackageResourceCounts;
+	enabledSummary?: PackageEnabledSummary;
 	packageSource?: string;
 	packageRelativePath?: string;
 	exposed?: boolean;

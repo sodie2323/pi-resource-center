@@ -508,7 +508,7 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 					item.enabled = !item.enabled;
 				}
 				const message = error instanceof Error ? error.message : String(error);
-				setActionMessage("toggle", "error", `Failed to update resource state: ${message}`);
+				setActionMessage("toggle", "error", `Failed to toggle ${item.category} ${item.name} in ${item.scope} scope: ${message}`);
 			}
 		};
 		const exposeItem = async (item: ResourceItem) => {
@@ -519,7 +519,7 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 			} catch (error: unknown) {
 				item.exposed = !item.exposed;
 				const message = error instanceof Error ? error.message : String(error);
-				setActionMessage("expose", "error", `Failed to update category visibility: ${message}`);
+				setActionMessage("expose", "error", `Failed to ${item.exposed ? "show" : "hide"} ${item.category} ${item.name} in ${item.scope} scope: ${message}`);
 			}
 		};
 		const removeItem = async (item: ResourceItem) => {
@@ -540,7 +540,7 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 				requestRender();
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error);
-				setActionMessage("remove", "error", `Failed to remove resource: ${message}`);
+				setActionMessage("remove", "error", `Failed to remove ${item.category} ${item.name} from ${item.scope} scope: ${message}`);
 			}
 		};
 		browser = new ResourceBrowser(theme, resources, category, {
