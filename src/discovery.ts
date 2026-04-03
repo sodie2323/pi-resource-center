@@ -162,7 +162,7 @@ function createThemeItem(resource: ResolvedResource, selectedTheme: string | und
 		scope,
 		source: normalizeSource(resource.metadata),
 		description: buildResourceDescription("themes", scope, resource.metadata, resource.path),
-		enabled: resource.enabled && name === selectedTheme,
+		enabled: name === selectedTheme,
 		path: resource.path,
 		packageSource: resource.metadata.origin === "package" ? resource.metadata.source : undefined,
 		packageRelativePath: getRelativeResourcePath(resource),

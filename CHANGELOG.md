@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2026-04-03
+
+### Fixed
+- Fixed theme selection state in the resource browser so the active theme correctly shows as enabled
+
 ## [0.1.2] - 2026-04-03
 
 ### Changed
