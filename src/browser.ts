@@ -723,6 +723,11 @@ export class ResourceBrowser implements Component, Focusable {
 				if (item.packageSource) {
 					return this.theme.fg("warning", "This package resource can't be removed individually");
 				}
+				if (item.source === "convention") {
+					return this.confirmingRemove
+						? this.theme.fg("warning", "Press Enter again to delete file · Esc cancels")
+						: this.theme.fg("dim", "Delete this file from disk");
+				}
 				if (item.category === "themes" && !("path" in item)) {
 					return this.theme.fg("warning", "Built-in themes can't be removed");
 				}

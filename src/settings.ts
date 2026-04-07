@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, relative, resolve } from "node:path";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
@@ -157,15 +157,16 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem):
 
 export async function removeResourceFromSettings(cwd: string, item: ResourceItem): Promise<string> {
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
+	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 	try {
-		const settingsFile = (await readSettingsFile(settingsPath)) ?? {
-			path: settingsPath,
-			dir: dirname(settingsPath),
-			settings: {} as SettingsShape,
-		};
-
 		if (item.category === "packages") {
-			removePackage(settingsFile.settings, item.source);
+			const settings = item.scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+			const packages = [...(settings.packages ?? [])] as PackageSource[];
+			const filtered = packages.filter((entry) => (typeof entry === "string" ? entry : entry.source) !== item.source);
+			if (filtered.length === packages.length) {
+				throw new Error(`Package source not found in ${item.scope} settings: ${item.source}`);
+			}
+			setPackagesForScope(settingsManager, item.scope, filtered);
 		} else {
 			if (item.packageSource) {
 				throw new Error(`Package resources cannot be removed individually`);
@@ -173,13 +174,46 @@ export async function removeResourceFromSettings(cwd: string, item: ResourceItem
 			if (item.category === "themes" || !("path" in item)) {
 				throw new Error(`Resource ${item.name} cannot be removed via path settings`);
 			}
-			removePathResource(settingsFile.settings, item.category, item, settingsFile.dir);
+			const settings = item.scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
+			const current = [...(settings[item.category] ?? [])];
+			const normalizedItemPath = normalizeFsPath(resolve(item.path));
+			const filtered = current.filter((entry) => {
+				const entryPath = normalizeFsPath(resolve(dirname(settingsPath), normalizeConfigPath(entry)));
+				return entryPath !== normalizedItemPath;
+			});
+			if (filtered.length === current.length) {
+				throw new Error(`Resource path is not configured in ${item.scope} settings: ${item.path}`);
+			}
+			setPathEntriesForScope(settingsManager, item.scope, item.category, filtered);
 		}
 
-		await saveSettingsFile(settingsPath, settingsFile.settings);
+		await settingsManager.flush();
 		return settingsPath;
 	} catch (error: unknown) {
 		throw new Error(`Failed to remove ${describeResource(item)} from ${item.scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
+	}
+}
+
+export async function removeConventionResource(item: ResourceItem): Promise<string> {
+	if (item.category === "packages") {
+		throw new Error("Packages are not file resources and can't be removed from disk this way");
+	}
+	if (item.packageSource) {
+		throw new Error("Package resources can't be removed individually from disk");
+	}
+	if (!("path" in item) || !item.path) {
+		throw new Error(`Resource ${item.name} has no file path`);
+	}
+	const filePath = resolve(item.path);
+	try {
+		const stats = await lstat(filePath);
+		if (stats.isDirectory()) {
+			throw new Error(`Expected a file but got directory: ${filePath}`);
+		}
+		await unlink(filePath);
+		return filePath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to remove file for ${describeResource(item)} at ${filePath}: ${toErrorMessage(error)}`);
 	}
 }
 
@@ -305,8 +339,8 @@ function togglePathResource(
 ): void {
 	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
 	const current = [...(settings[category] ?? [])];
-	const normalizedPath = resolve(settingsDir, normalizeConfigPath(item.path));
-	const filtered = current.filter((entry) => resolve(settingsDir, normalizeConfigPath(entry)) !== normalizedPath);
+	const normalizedPath = normalizeFsPath(resolve(settingsDir, normalizeConfigPath(item.path)));
+	const filtered = current.filter((entry) => normalizeFsPath(resolve(settingsDir, normalizeConfigPath(entry))) !== normalizedPath);
 	const relativePath = toSettingsPath(item.path, settingsDir);
 	filtered.push(item.enabled ? `+${relativePath}` : `-${relativePath}`);
 	setPathEntriesForScope(settingsManager, scope, category, filtered);
@@ -347,25 +381,6 @@ function togglePackageResource(
 		packages[index] = pkg.source;
 	}
 	setPackagesForScope(settingsManager, item.scope, packages.length > 0 ? packages : []);
-}
-
-function removePackage(settings: SettingsShape, source: string): void {
-	const packages = [...(settings.packages ?? [])].filter(
-		(entry) => (typeof entry === "string" ? entry : entry.source) !== source,
-	);
-	settings.packages = packages.length > 0 ? packages : undefined;
-}
-
-function removePathResource(
-	settings: SettingsShape,
-	category: Exclude<ResourceCategory, "packages" | "themes">,
-	item: FileResourceItem,
-	settingsDir: string,
-): void {
-	const current = [...(settings[category] ?? [])];
-	const normalizedPath = resolve(settingsDir, normalizeConfigPath(item.path));
-	const filtered = current.filter((entry) => resolve(settingsDir, normalizeConfigPath(entry)) !== normalizedPath);
-	settings[category] = filtered.length > 0 ? filtered : undefined;
 }
 
 async function saveSettingsFile(settingsPath: string, settings: SettingsShape): Promise<void> {
@@ -467,6 +482,10 @@ function normalizeConfigPath(value: string): string {
 		return value.slice(1).replace(/\\/g, "/");
 	}
 	return value.replace(/\\/g, "/");
+}
+
+function normalizeFsPath(value: string): string {
+	return value.replace(/\\/g, "/").toLowerCase();
 }
 
 function toSettingsPath(path: string, settingsDir: string): string {

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { ResourceBrowser } from "./browser.js";
 import { discoverResources } from "./discovery.js";
-import { addPackageToSettings, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "./settings.js";
+import { addPackageToSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "./settings.js";
 import { isRemotePackageSource, type ResourceCategory, type ResourceItem } from "./types.js";
 
 const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
@@ -290,6 +290,12 @@ async function handleMutateCommand(
 			ctx.ui.notify(`Built-in theme "${item.name}" can't be removed.`, "warning");
 			return;
 		}
+		if (item.source === "convention") {
+			const filePath = await removeConventionResource(item);
+			await refreshCompletionCache(ctx.cwd);
+			ctx.ui.notify(`Deleted file ${filePath}`, "info");
+			return;
+		}
 		const settingsPath = await removeResourceFromSettings(ctx.cwd, item);
 		await refreshCompletionCache(ctx.cwd);
 		await reloadAfterSettingsChange(ctx, `Removed ${item.name} · ${settingsPath}`);
@@ -532,11 +538,17 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 					setActionMessage("remove", "warning", `Built-in theme "${item.name}" can't be removed.`);
 					return;
 				}
+				if (item.source === "convention") {
+					const filePath = await removeConventionResource(item);
+					await refreshBrowser();
+					setActionMessage("remove", "info", `Deleted file ${filePath}`);
+					requestRender();
+					return;
+				}
 				const settingsPath = await removeResourceFromSettings(ctx.cwd, item);
 				hasPendingChanges = true;
-				browser.removeItem(item);
 				await refreshBrowser();
-				ctx.ui.notify(`Removed ${item.name} · ${settingsPath}`, "info");
+				setActionMessage("remove", "info", `Removed ${item.name} · ${settingsPath}`);
 				requestRender();
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error);
