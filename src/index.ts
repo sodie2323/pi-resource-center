@@ -3,7 +3,7 @@ import { basename, dirname, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { ResourceBrowser } from "./browser.js";
 import { discoverResources } from "./discovery.js";
-import { addPackageToSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "./settings.js";
+import { addPackageToSettings, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "./settings.js";
 import { isRemotePackageSource, type ResourceCategory, type ResourceItem } from "./types.js";
 
 const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
@@ -583,6 +583,7 @@ function normalizeCategoryAlias(value: string): ResourceCategory {
 
 async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const resources = await discoverResources(ctx.cwd);
+	const resourceCenterSettings = await readResourceCenterSettings();
 	let hasPendingChanges = false;
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
@@ -725,13 +726,19 @@ async function openBrowser(category: ResourceCategory, ctx: ExtensionCommandCont
 				setActionMessage("remove", "error", `Failed to remove ${item.category} ${item.name} from ${item.scope} scope: ${message}`);
 			}
 		};
-		browser = new ResourceBrowser(theme, resources, category, {
+		browser = new ResourceBrowser(theme, resources, category, resourceCenterSettings, {
 			onClose: closeBrowser,
 			onInspect: undefined,
 			onToggle: (item) => void toggleItem(item),
 			onExpose: (item) => void exposeItem(item),
 			onUpdate: (item) => void updatePackage(item),
 			onRemove: (item) => void removeItem(item),
+			onSettingsChange: (settings) => {
+				void saveResourceCenterSettings(settings).catch((error: unknown) => {
+					const message = error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`Failed to save resource center settings: ${message}`, "error");
+				});
+			},
 		});
 		return {
 			render: (width) => browser.render(width),

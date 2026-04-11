@@ -36,13 +36,34 @@ export interface ExposedResourceEntry {
 	path: string;
 }
 
-interface ResourceHubState {
+export interface ResourceCenterSettings {
+	showSource: boolean;
+	showPath: boolean;
+	showPathInPackage: boolean;
+	showInstalledPath: boolean;
+	packagePreviewLimit: 3 | 5 | 8;
+	searchIncludeDescription: boolean;
+	searchIncludePath: boolean;
+}
+
+export interface ResourceCenterSettingsFile extends ResourceCenterSettings {
+	/** Persisted "expose/hide" state for package resources */
 	exposedResources?: ExposedResourceEntry[];
 }
 
+export const DEFAULT_RESOURCE_CENTER_SETTINGS: ResourceCenterSettings = {
+	showSource: true,
+	showPath: true,
+	showPathInPackage: true,
+	showInstalledPath: true,
+	packagePreviewLimit: 5,
+	searchIncludeDescription: true,
+	searchIncludePath: true,
+};
+
 export const PROJECT_AGENT_DIR = ".pi";
 export const USER_AGENT_DIR = resolve(homedir(), ".pi", "agent");
-const RESOURCE_HUB_STATE_FILE = "resource-hub.json";
+const RESOURCE_CENTER_SETTINGS_FILE = "pi-resource-center-settings.json";
 
 export async function readSettingsFile(path: string): Promise<SettingsFile | undefined> {
 	try {
@@ -68,10 +89,8 @@ export function getUserSettingsPath(): string {
 	return resolve(USER_AGENT_DIR, "settings.json");
 }
 
-export function getResourceHubStatePath(scope: ResourceScope, cwd: string): string {
-	return scope === "project"
-		? resolve(cwd, PROJECT_AGENT_DIR, RESOURCE_HUB_STATE_FILE)
-		: resolve(USER_AGENT_DIR, RESOURCE_HUB_STATE_FILE);
+export function getResourceCenterSettingsPath(): string {
+	return resolve(USER_AGENT_DIR, RESOURCE_CENTER_SETTINGS_FILE);
 }
 
 export function getSettingPaths(settingsFile: SettingsFile | undefined, category: ResourceCategory): string[] {
@@ -262,15 +281,12 @@ export async function addPackageToSettings(
 	}
 }
 
-export async function getExposedResources(cwd: string): Promise<ExposedResourceEntry[]> {
+export async function getExposedResources(_cwd: string): Promise<ExposedResourceEntry[]> {
 	try {
-		const [projectState, userState] = await Promise.all([
-			readResourceHubState(getResourceHubStatePath("project", cwd)),
-			readResourceHubState(getResourceHubStatePath("user", cwd)),
-		]);
-		return [...(projectState.exposedResources ?? []), ...(userState.exposedResources ?? [])];
+		const file = await readResourceCenterSettingsFile();
+		return file.exposedResources ?? [];
 	} catch (error: unknown) {
-		throw new Error(`Failed to read exposed resources for cwd ${cwd}: ${toErrorMessage(error)}`);
+		throw new Error(`Failed to read exposed resources: ${toErrorMessage(error)}`);
 	}
 }
 
@@ -278,21 +294,22 @@ export async function setResourceExposed(cwd: string, item: ResourceItem, expose
 	if (!item.packageSource || item.category === "packages" || item.category === "themes") {
 		throw new Error(`Only package-contained extensions, skills, and prompts can be exposed`);
 	}
-	const path = item.packageRelativePath ?? inferPackageRelativePath(item);
-	const statePath = getResourceHubStatePath(item.scope, cwd);
+	const entryPath = item.packageRelativePath ?? inferPackageRelativePath(item);
+	const settingsPath = getResourceCenterSettingsPath();
 	try {
-		const state = await readResourceHubState(statePath);
-		const entries = [...(state.exposedResources ?? [])];
+		const file = await readResourceCenterSettingsFile();
+		const entries = [...(file.exposedResources ?? [])];
+		const normalizedPath = normalizeConfigPath(entryPath);
 		const nextEntries = entries.filter(
-			(entry) => !(entry.category === item.category && entry.package === item.packageSource && normalizeConfigPath(entry.path) === normalizeConfigPath(path)),
+			(entry) => !(entry.scope === item.scope && entry.category === item.category && entry.package === item.packageSource && normalizeConfigPath(entry.path) === normalizedPath),
 		);
 		if (exposed) {
-			nextEntries.push({ scope: item.scope, category: item.category, package: item.packageSource, path });
+			nextEntries.push({ scope: item.scope, category: item.category, package: item.packageSource, path: entryPath });
 		}
-		await saveResourceHubState(statePath, { exposedResources: nextEntries.length > 0 ? nextEntries : undefined });
-		return statePath;
+		await saveResourceCenterSettingsFile({ ...file, exposedResources: nextEntries.length ? nextEntries : undefined });
+		return settingsPath;
 	} catch (error: unknown) {
-		throw new Error(`Failed to ${exposed ? "expose" : "hide"} ${describeResource(item)} in ${item.scope} scope via ${statePath}: ${toErrorMessage(error)}`);
+		throw new Error(`Failed to ${exposed ? "expose" : "hide"} ${describeResource(item)} in ${item.scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
 }
 
@@ -406,6 +423,52 @@ async function readResourceHubState(path: string): Promise<ResourceHubState> {
 async function saveResourceHubState(path: string, state: ResourceHubState): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+async function readResourceCenterSettingsFile(): Promise<ResourceCenterSettingsFile> {
+	const path = getResourceCenterSettingsPath();
+	try {
+		const raw = await readFile(path, "utf8");
+		const parsed = JSON.parse(raw) as Partial<ResourceCenterSettingsFile>;
+		return {
+			...DEFAULT_RESOURCE_CENTER_SETTINGS,
+			...parsed,
+			exposedResources: parsed.exposedResources,
+		};
+	} catch (error: unknown) {
+		if (isFileNotFoundError(error)) {
+			return { ...DEFAULT_RESOURCE_CENTER_SETTINGS };
+		}
+		if (error instanceof SyntaxError) {
+			throw new Error(`Failed to parse resource center settings ${path}: ${error.message}`);
+		}
+		throw new Error(`Failed to read resource center settings ${path}: ${toErrorMessage(error)}`);
+	}
+}
+
+async function saveResourceCenterSettingsFile(file: ResourceCenterSettingsFile): Promise<string> {
+	const path = getResourceCenterSettingsPath();
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+	return path;
+}
+
+export async function readResourceCenterSettings(): Promise<ResourceCenterSettings> {
+	const file = await readResourceCenterSettingsFile();
+	const { exposedResources: _exposed, ...settings } = file;
+	return settings;
+}
+
+export async function saveResourceCenterSettings(settings: ResourceCenterSettings): Promise<string> {
+	// Preserve exposedResources when writing settings.
+	let exposedResources: ExposedResourceEntry[] | undefined;
+	try {
+		const existing = await readResourceCenterSettingsFile();
+		exposedResources = existing.exposedResources;
+	} catch {
+		exposedResources = undefined;
+	}
+	return await saveResourceCenterSettingsFile({ ...settings, exposedResources });
 }
 
 function isFileNotFoundError(error: unknown): boolean {

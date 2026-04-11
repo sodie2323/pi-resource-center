@@ -1,10 +1,14 @@
 import { basename } from "node:path";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import { getSettingsListTheme, type Theme } from "@mariozechner/pi-coding-agent";
+import type { ResourceCenterSettings } from "./settings.js";
 import {
 	type Component,
 	type Focusable,
 	getKeybindings,
 	Input,
+	fuzzyFilter,
+	SettingsList,
+	type SettingItem,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -21,6 +25,14 @@ const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	themes: "Themes",
 };
 
+const SETTINGS_SECTION_ORDER: SettingsSection[] = ["all", "display", "packages", "search"];
+const SETTINGS_SECTION_LABELS: Record<SettingsSection, string> = {
+	all: "All",
+	display: "Display",
+	packages: "Packages",
+	search: "Search",
+};
+
 function formatPackageLabel(source: string): string {
 	if (source.startsWith("npm:")) return source;
 	if (source.startsWith("git:")) return source;
@@ -28,9 +40,12 @@ function formatPackageLabel(source: string): string {
 	return `local:${basename(source.replace(/[\\/]+$/, "")) || source}`;
 }
 
-type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems";
+type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems" | "settings";
 type DetailAction = "manage" | "toggle" | "expose" | "update" | "remove" | "back";
 type PackageContentCategory = Exclude<ResourceCategory, "packages">;
+type SettingsSection = "all" | "display" | "packages" | "search";
+type SettingsAction = { kind: "toggle"; key: keyof ResourceCenterSettings } | { kind: "cycle"; key: keyof ResourceCenterSettings } | { kind: "back" };
+type SettingsEntry = { section: SettingsSection; label: string; description: string; action: SettingsAction };
 type PackageGroupEntry =
 	| { kind: "category"; category: PackageContentCategory }
 	| { kind: "item"; category: PackageContentCategory; item: ResourceItem }
@@ -43,6 +58,7 @@ interface BrowserCallbacks {
 	onExpose?: (item: ResourceItem) => void;
 	onUpdate?: (item: ResourceItem) => void;
 	onRemove?: (item: ResourceItem) => void;
+	onSettingsChange?: (settings: ResourceCenterSettings) => void | Promise<void>;
 }
 
 export class ResourceBrowser implements Component, Focusable {
@@ -50,12 +66,15 @@ export class ResourceBrowser implements Component, Focusable {
 	private readonly callbacks: BrowserCallbacks;
 	private readonly mainSearchInput: Input;
 	private readonly packageSearchInput: Input;
+	private readonly settingsSearchInput: Input;
 	private readonly resources: ResourceIndex;
+	private settings: ResourceCenterSettings;
 	private category: ResourceCategory;
 	private filteredItems: ResourceItem[] = [];
 	private selectedIndex = 0;
 	private maxVisible = 8;
 	private mode: BrowserMode = "list";
+	private settingsReturnMode: Exclude<BrowserMode, "settings"> = "list";
 	private detailItem: ResourceItem | undefined;
 	private detailSelectedIndex = 0;
 	private detailReturnMode: Exclude<BrowserMode, "detail"> = "list";
@@ -64,6 +83,10 @@ export class ResourceBrowser implements Component, Focusable {
 	private packageContentsCategory: PackageContentCategory = "extensions";
 	private packageContentsItems: ResourceItem[] = [];
 	private packageContentsSelectedIndex = 0;
+	private settingsSection: SettingsSection = "all";
+	private settingsList: SettingsList | undefined;
+	private settingsListSection: SettingsSection | undefined;
+	private settingsListQuery: string | undefined;
 	private containedItemsCache = new Map<string, ResourceItem[]>();
 	private filteredPackageItemsCache = new Map<string, ResourceItem[]>();
 	private packageGroupEntriesCache:
@@ -87,23 +110,29 @@ export class ResourceBrowser implements Component, Focusable {
 		this._focused = value;
 		this.mainSearchInput.focused = value;
 		this.packageSearchInput.focused = value;
+		this.settingsSearchInput.focused = value;
 	}
 
-	constructor(theme: Theme, resources: ResourceIndex, category: ResourceCategory, callbacks: BrowserCallbacks) {
+	constructor(theme: Theme, resources: ResourceIndex, category: ResourceCategory, settings: ResourceCenterSettings, callbacks: BrowserCallbacks) {
 		this.theme = theme;
 		this.resources = resources;
+		this.settings = settings;
 		this.category = category;
 		this.callbacks = callbacks;
 		this.mainSearchInput = new Input();
 		this.packageSearchInput = new Input();
+		this.settingsSearchInput = new Input();
 		this.mainSearchInput.setValue("");
 		this.packageSearchInput.setValue("");
+		this.settingsSearchInput.setValue("");
 		this.applyFilter();
 	}
 
 	invalidate(): void {
 		this.mainSearchInput.invalidate();
 		this.packageSearchInput.invalidate();
+		this.settingsSearchInput.invalidate();
+		this.settingsList?.invalidate();
 	}
 
 	private invalidatePackageCaches(): void {
@@ -124,6 +153,15 @@ export class ResourceBrowser implements Component, Focusable {
 		}
 		if (this.mode === "packageItems") {
 			this.handlePackageItemsInput(data);
+			return;
+		}
+		if (this.mode === "settings") {
+			this.handleSettingsInput(data);
+			return;
+		}
+
+		if (data === "S") {
+			this.openSettings();
 			return;
 		}
 
@@ -186,6 +224,15 @@ export class ResourceBrowser implements Component, Focusable {
 			lines.push(...this.wrapBlock([this.renderDetailFooter(innerWidth)], width));
 			return lines;
 		}
+		if (this.mode === "settings") {
+			lines.push(...this.wrapBlock(this.renderSettingsTabs(innerWidth), width));
+			lines.push("");
+			lines.push(...this.wrapBlock(this.renderSettingsSearch(innerWidth), width));
+			lines.push("");
+			const list = this.ensureSettingsList();
+			lines.push(...this.wrapBlock(list.render(innerWidth), width));
+			return lines;
+		}
 		if (this.mode === "packageGroups") {
 			lines.push("");
 			lines.push(...this.wrapBlock(this.renderSearch(innerWidth), width));
@@ -216,11 +263,13 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private renderHeader(width: number): string[] {
 		const count =
-			this.mode === "packageItems"
-				? this.packageContentsItems.length
-				: this.mode === "packageGroups"
-					? this.getPackageGroupEntries().length
-					: this.filteredItems.length;
+			this.mode === "settings"
+				? this.getFilteredSettingsItems(this.settingsSection).length
+				: this.mode === "packageItems"
+					? this.packageContentsItems.length
+					: this.mode === "packageGroups"
+						? this.getPackageGroupEntries().length
+						: this.filteredItems.length;
 		const left = this.theme.fg("accent", this.theme.bold(this.getHeaderTitle()));
 		const right = this.theme.fg("muted", `${count} result${count === 1 ? "" : "s"}`);
 		const spacing = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
@@ -253,7 +302,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private renderList(width: number): string[] {
 		if (this.filteredItems.length === 0) {
-			return [this.theme.fg("muted", "Nothing matches the current view")];
+			return [this.theme.fg("muted", "  Nothing matches the current view")];
 		}
 
 		const startIndex = Math.max(
@@ -316,11 +365,13 @@ export class ResourceBrowser implements Component, Focusable {
 			truncateToWidth(`${this.theme.fg("muted", "Enabled")}: ${enabledText}`, width, "…"),
 			truncateToWidth(`${this.theme.fg("muted", "Scope")}: ${item.scope}`, width, "…"),
 			truncateToWidth(`${this.theme.fg("muted", "Name")}: ${item.name}`, width, "…"),
-			truncateToWidth(`${this.theme.fg("muted", "Source")}: ${sourceText}`, width, "…"),
-			...(item.packageRelativePath
+			...(this.settings.showSource ? [truncateToWidth(`${this.theme.fg("muted", "Source")}: ${sourceText}`, width, "…")] : []),
+			...(this.settings.showPathInPackage && item.packageRelativePath
 				? [truncateToWidth(`${this.theme.fg("muted", "Path in Package")}: ${item.packageRelativePath}`, width, "…")]
 				: []),
-			...(pathText ? [truncateToWidth(`${this.theme.fg("muted", "Path")}: ${pathText}`, width, "…")] : []),
+			...(this.settings.showPath && pathText && (item.category !== "packages" || this.settings.showInstalledPath)
+				? [truncateToWidth(`${this.theme.fg("muted", "Path")}: ${pathText}`, width, "…")]
+				: []),
 		];
 		if (item.category === "packages") {
 			const enabledSummary = this.formatPackageEnabledSummary(item);
@@ -433,11 +484,11 @@ export class ResourceBrowser implements Component, Focusable {
 		const text = selected?.category === "packages"
 			? "Tab switch · ↑↓ move · Space enable/disable all contents · Enter details · Esc close"
 			: "Tab switch · ↑↓ move · Space toggle · Enter details · Esc close";
-		return truncateToWidth(this.theme.fg("dim", text), width, "…");
+		return this.renderFooterWithSettingsHint(width, text);
 	}
 
 	private renderDetailFooter(width: number): string {
-		return truncateToWidth(this.theme.fg("dim", "↑↓ move · Enter confirm · Esc back"), width, "…");
+		return this.renderFooterWithSettingsHint(width, "↑↓ move · Enter confirm · Esc back");
 	}
 
 	private renderPackageFooter(width: number): string {
@@ -447,7 +498,32 @@ export class ResourceBrowser implements Component, Focusable {
 				? "Type to search · ↑↓ move · Space toggle · Enter details · Esc back"
 				: "Type to search · ↑↓ move · Enter open full list · Esc back"
 			: "Type to search · ↑↓ move · Enter details · Space toggle · Esc back";
-		return truncateToWidth(this.theme.fg("dim", text), width, "…");
+		return this.renderFooterWithSettingsHint(width, text);
+	}
+
+	private renderFooterWithSettingsHint(width: number, text: string): string {
+		const base = this.theme.fg("dim", text);
+		const hint = this.theme.fg("accent", this.theme.bold("Shift+S Settings"));
+		return truncateToWidth(`${base}${this.theme.fg("dim", " · ")}${hint}`, width, "…");
+	}
+
+	private renderSettingsTabs(width: number): string[] {
+		const title = this.theme.fg("muted", "(tab to cycle)");
+		const tabs = SETTINGS_SECTION_ORDER.map((section) => {
+			const label = ` ${SETTINGS_SECTION_LABELS[section]} `;
+			if (section === this.settingsSection) {
+				return this.theme.bg("selectedBg", this.theme.fg("accent", this.theme.bold(label)));
+			}
+			return this.theme.fg("muted", label);
+		}).join(" ");
+		return [truncateToWidth(`${tabs}  ${title}`, width, "…")];
+	}
+
+	private renderSettingsSearch(width: number): string[] {
+		const label = "Search:";
+		const inputWidth = Math.max(1, width - visibleWidth(label) - 1);
+		const input = this.settingsSearchInput.render(inputWidth)[0] ?? "";
+		return [truncateToWidth(`${this.theme.fg("muted", label)} ${input}`, width, "…")];
 	}
 
 	private renderDescriptionBlock(text: string, width: number): string[] {
@@ -516,6 +592,10 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private handleDetailInput(data: string): void {
 		const kb = getKeybindings();
+		if (data === "S") {
+			this.openSettings();
+			return;
+		}
 		if (kb.matches(data, "tui.select.cancel")) {
 			if (this.confirmingRemove) {
 				this.confirmingRemove = false;
@@ -589,6 +669,10 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private handlePackageGroupsInput(data: string): void {
 		const kb = getKeybindings();
+		if (data === "S") {
+			this.openSettings();
+			return;
+		}
 		if (kb.matches(data, "tui.select.cancel")) {
 			if (this.packageItem) {
 				this.openDetailItem(this.packageItem, "list");
@@ -634,8 +718,50 @@ export class ResourceBrowser implements Component, Focusable {
 		this.packageGroupSelectionIndex = Math.max(0, Math.min(this.packageGroupSelectionIndex, this.getPackageGroupEntries().length - 1));
 	}
 
+	private handleSettingsInput(data: string): void {
+		const kb = getKeybindings();
+		if (kb.matches(data, "tui.select.cancel")) {
+			this.mode = this.settingsReturnMode;
+			return;
+		}
+		if (kb.matches(data, "tui.editor.cursorLeft")) {
+			this.moveSettingsSection(-1);
+			return;
+		}
+		if (kb.matches(data, "tui.editor.cursorRight") || kb.matches(data, "tui.input.tab")) {
+			this.moveSettingsSection(1);
+			return;
+		}
+
+		// List navigation/activation
+		if (
+			kb.matches(data, "tui.select.up") ||
+			kb.matches(data, "tui.select.down") ||
+			kb.matches(data, "tui.select.pageUp") ||
+			kb.matches(data, "tui.select.pageDown") ||
+			kb.matches(data, "tui.select.confirm") ||
+			data === " "
+		) {
+			this.ensureSettingsList().handleInput?.(data);
+			return;
+		}
+
+		// Search input (mimics /resource: typing always edits query)
+		const before = this.settingsSearchInput.getValue();
+		this.settingsSearchInput.handleInput(data);
+		if (this.settingsSearchInput.getValue() !== before) {
+			this.settingsList = undefined;
+			this.settingsListSection = undefined;
+			this.settingsListQuery = undefined;
+		}
+	}
+
 	private handlePackageItemsInput(data: string): void {
 		const kb = getKeybindings();
+		if (data === "S") {
+			this.openSettings();
+			return;
+		}
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.mode = "packageGroups";
 			return;
@@ -888,6 +1014,7 @@ export class ResourceBrowser implements Component, Focusable {
 		this.mode = "packageGroups";
 	}
 
+
 	private moveCategory(direction: 1 | -1): void {
 		const index = CATEGORY_ORDER.indexOf(this.category);
 		const next = (index + direction + CATEGORY_ORDER.length) % CATEGORY_ORDER.length;
@@ -899,11 +1026,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private applyFilter(): void {
 		const query = this.mainSearchInput.getValue().trim().toLowerCase();
 		const items = this.getVisibleCategoryItems(this.category);
-		this.filteredItems = items.filter((item) => {
-			if (!query) return true;
-			const haystacks = [item.name, item.description, item.source, "path" in item ? item.path : item.name];
-			return haystacks.some((value) => value.toLowerCase().includes(query));
-		});
+		this.filteredItems = items.filter((item) => this.matchesResourceQuery(item, query));
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
 	}
 
@@ -915,6 +1038,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private getHeaderTitle(): string {
 		if (this.mode === "detail" && this.detailItem) return this.getDetailTitle(this.detailItem);
+		if (this.mode === "settings") return "Resources / Settings";
 		if (this.mode === "packageGroups" && this.packageItem?.category === "packages") {
 			return `Packages / ${formatPackageLabel(this.packageItem.source)} / Contents`;
 		}
@@ -960,14 +1084,9 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private matchesResourceQuery(item: ResourceItem, query: string): boolean {
 		if (!query) return true;
-		const haystacks = [
-			item.name,
-			item.description,
-			item.source,
-			item.packageSource ?? "",
-			item.packageRelativePath ?? "",
-			"path" in item ? item.path : item.name,
-		];
+		const haystacks = [item.name, item.source, item.packageSource ?? "", item.packageRelativePath ?? ""];
+		if (this.settings.searchIncludeDescription) haystacks.push(item.description);
+		if (this.settings.searchIncludePath && "path" in item) haystacks.push(item.path);
 		return haystacks.some((value) => value.toLowerCase().includes(query));
 	}
 
@@ -1008,11 +1127,11 @@ export class ResourceBrowser implements Component, Focusable {
 			const items = this.getFilteredPackageContainedItems(pkg, category);
 			if (!categoryMatches && items.length === 0) continue;
 			entries.push({ kind: "category", category });
-			for (const item of items.slice(0, 5)) {
+			for (const item of items.slice(0, this.settings.packagePreviewLimit)) {
 				entries.push({ kind: "item", category, item });
 			}
-			if (items.length > 5) {
-				entries.push({ kind: "more", category, remaining: items.length - 5 });
+			if (items.length > this.settings.packagePreviewLimit) {
+				entries.push({ kind: "more", category, remaining: items.length - this.settings.packagePreviewLimit });
 			}
 		}
 		this.packageGroupEntriesCache = { packageId: pkg.id, query, entries };
@@ -1024,8 +1143,167 @@ export class ResourceBrowser implements Component, Focusable {
 		const cacheKey = `${pkg.id}:${category}`;
 		const cached = this.containedItemsCache.get(cacheKey);
 		if (cached) return cached;
-		const items = this.resources.categories[category].filter((item) => item.packageSource === pkg.source);
+		const items = this.resources.categories[category].filter((item) => item.packageSource === pkg.source && item.scope === pkg.scope);
 		this.containedItemsCache.set(cacheKey, items);
 		return items;
+	}
+
+	private openSettings(): void {
+		if (this.mode === "settings") return;
+		this.settingsReturnMode = this.mode;
+		this.settingsSection = "all";
+		this.settingsSearchInput.setValue("");
+		this.settingsList = undefined;
+		this.settingsListSection = undefined;
+		this.settingsListQuery = undefined;
+		this.mode = "settings";
+	}
+
+	private ensureSettingsList(): SettingsList {
+		const query = this.getSettingsQuery();
+		if (!this.settingsList || this.settingsListSection !== this.settingsSection || this.settingsListQuery !== query) {
+			const items = this.getFilteredSettingsItems(this.settingsSection);
+			const baseTheme = getSettingsListTheme();
+			// We render SettingsList inside wrapBlock() (like /resource content blocks). SettingsList already
+			// prefixes some hint lines with two spaces, which would indent too far. Trim those.
+			const adjustedTheme = {
+				...baseTheme,
+				hint: (text: string) => baseTheme.hint(text.replace(/^  /, "")),
+			};
+			this.settingsList = new SettingsList(
+				items,
+				10,
+				adjustedTheme,
+				(id, newValue) => this.applySettingsChange(id, newValue),
+				() => {
+					this.mode = this.settingsReturnMode;
+				},
+			);
+			this.settingsListSection = this.settingsSection;
+			this.settingsListQuery = query;
+		}
+		return this.settingsList;
+	}
+
+	private buildSettingsItems(section: SettingsSection): SettingItem[] {
+		const display: SettingItem[] = [
+			{
+				id: "showSource",
+				label: "Show source",
+				description: "Show source values in detail pages.",
+				currentValue: this.settings.showSource ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "showPath",
+				label: "Show path",
+				description: "Show file paths in detail pages.",
+				currentValue: this.settings.showPath ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "showPathInPackage",
+				label: "Show path in package",
+				description: "Show package-relative paths for package resources.",
+				currentValue: this.settings.showPathInPackage ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "showInstalledPath",
+				label: "Show installed package path",
+				description: "Show resolved install path for package details.",
+				currentValue: this.settings.showInstalledPath ? "true" : "false",
+				values: ["true", "false"],
+			},
+		];
+
+		const packages: SettingItem[] = [
+			{
+				id: "packagePreviewLimit",
+				label: "Package preview size",
+				description: "How many items to show per category in grouped package view.",
+				currentValue: String(this.settings.packagePreviewLimit),
+				values: ["3", "5", "8"],
+			},
+		];
+
+		const search: SettingItem[] = [
+			{
+				id: "searchIncludeDescription",
+				label: "Search descriptions",
+				description: "Include descriptions when filtering resources.",
+				currentValue: this.settings.searchIncludeDescription ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "searchIncludePath",
+				label: "Search paths",
+				description: "Include full file paths when filtering resources.",
+				currentValue: this.settings.searchIncludePath ? "true" : "false",
+				values: ["true", "false"],
+			},
+		];
+
+		switch (section) {
+			case "all":
+				return [...display, ...packages, ...search];
+			case "display":
+				return display;
+			case "packages":
+				return packages;
+			case "search":
+				return search;
+		}
+	}
+
+	private getSettingsQuery(): string {
+		return this.settingsSearchInput.getValue().trim();
+	}
+
+	private getFilteredSettingsItems(section: SettingsSection): SettingItem[] {
+		const items = this.buildSettingsItems(section);
+		const query = this.getSettingsQuery();
+		if (!query) return items;
+		return fuzzyFilter(items, query, (item) => `${item.label} ${item.description ?? ""}`);
+	}
+
+	private applySettingsChange(id: string, newValue: string): void {
+		const next = { ...this.settings };
+		switch (id) {
+			case "showSource":
+				next.showSource = newValue === "true";
+				break;
+			case "showPath":
+				next.showPath = newValue === "true";
+				break;
+			case "showPathInPackage":
+				next.showPathInPackage = newValue === "true";
+				break;
+			case "showInstalledPath":
+				next.showInstalledPath = newValue === "true";
+				break;
+			case "packagePreviewLimit":
+				next.packagePreviewLimit = Number(newValue) as ResourceCenterSettings["packagePreviewLimit"];
+				break;
+			case "searchIncludeDescription":
+				next.searchIncludeDescription = newValue === "true";
+				break;
+			case "searchIncludePath":
+				next.searchIncludePath = newValue === "true";
+				break;
+			default:
+				return;
+		}
+		this.settings = next;
+		this.callbacks.onSettingsChange?.(this.settings);
+		this.invalidatePackageCaches();
+		this.applyFilter();
+	}
+
+	private moveSettingsSection(delta: -1 | 1): void {
+		const index = SETTINGS_SECTION_ORDER.indexOf(this.settingsSection);
+		this.settingsSection = SETTINGS_SECTION_ORDER[(index + delta + SETTINGS_SECTION_ORDER.length) % SETTINGS_SECTION_ORDER.length]!;
+		this.settingsList = undefined;
+		this.settingsListSection = undefined;
 	}
 }
