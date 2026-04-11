@@ -37,6 +37,8 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - [TUI controls](#tui-controls)
   - [Browser view](#browser-view)
   - [Detail view](#detail-view)
+  - [Settings view](#settings-view)
+- [Plugin settings](#plugin-settings)
 - [Discovery model](#discovery-model)
   - [Project scope](#project-scope)
   - [User scope](#user-scope)
@@ -58,6 +60,7 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - Add package sources via `/resource add ...`
 - Update remote packages directly from the browser
 - Argument completions for `/resource` subcommands
+- Built-in settings UI (`Shift+S`) with persistent preferences
 
 ## Quick start
 
@@ -228,6 +231,7 @@ Examples:
 - `PageUp/PageDown` — jump through the list
 - `Enter` — open resource details
 - `Space` — enable/disable or apply the selected item
+- `Shift+S` — open Resource Center settings
 - `Esc` — close or go back
 
 Items from local packages may show a package marker and package-relative path in the list and detail view.
@@ -236,11 +240,36 @@ Items from local packages may show a package marker and package-relative path in
 
 - `Up/Down` — choose an action
 - `Enter` — confirm action
+- `Shift+S` — open Resource Center settings
 - `Esc` — return to the list
 
 For packages, the detail view includes a **Manage Resources** action that opens contained extensions, skills, prompts, and themes for that package.
 
 For package-contained extensions, skills, and prompts, the detail view also includes a **Show in Category** / **Hide from Category** action.
+
+### Settings view
+
+Open from anywhere in the Resource Center TUI via `Shift+S`.
+
+- `Left/Right` or `Tab` — switch settings tabs (`All`, `Display`, `Packages`, `Search`)
+- Type to filter settings (search matches setting labels and descriptions)
+- `Up/Down` — move selection
+- `Enter` or `Space` — change the selected setting
+- `Esc` — close settings
+
+## Plugin settings
+
+Resource Center stores its own UI preferences and "exposed" package resource state in a separate file (not in Pi's `settings.json`):
+
+- Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
+- macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
+
+This file includes:
+
+- UI preferences set in the Settings view (what fields to show, search behavior, package preview sizing)
+- `exposedResources`: which package-contained extensions/skills/prompts are shown in their top-level categories
+
+> Older versions used `resource-hub.json`. It is safe to delete legacy `resource-hub.json` files once you've confirmed your `exposedResources` are present in the settings file.
 
 ## Discovery model
 
