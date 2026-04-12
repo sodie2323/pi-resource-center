@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import {
 	DefaultPackageManager,
@@ -18,10 +18,20 @@ import type {
 	ResourceScope,
 	ThemeResourceItem,
 } from "./types.js";
+import { isRemotePackageSource } from "./types.js";
 
 const RESOURCE_CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
 
+type DiscoveryCaches = {
+	mtimeByPath: Map<string, number | undefined>;
+	packageDescriptionByPath: Map<string, string | undefined>;
+};
+
 export async function discoverResources(cwd: string): Promise<ResourceIndex> {
+	const caches: DiscoveryCaches = {
+		mtimeByPath: new Map(),
+		packageDescriptionByPath: new Map(),
+	};
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
 	const resolvedPaths = await packageManager.resolve();
@@ -30,7 +40,7 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 	const selectedTheme = projectSettings.theme ?? userSettings.theme;
 	const packageCounts = buildPackageCountMap(resolvedPaths);
 	const packageEnabledCounts = buildPackageEnabledSummaryMap(resolvedPaths, selectedTheme);
-	const packageDescriptions = await buildPackageDescriptionMap(resolvedPaths);
+	const packageDescriptions = await buildPackageDescriptionMap(resolvedPaths, caches);
 	const packageInstallPaths = buildPackageInstallPathMap(resolvedPaths);
 	const exposedResources = await getExposedResources(cwd);
 	const [projectPackages, userPackages] = await Promise.all([
@@ -41,6 +51,7 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 			packageEnabledCounts,
 			packageDescriptions,
 			packageInstallPaths,
+			caches,
 		),
 		buildPackageItems(
 			(userSettings.packages ?? []) as PackageSource[],
@@ -49,15 +60,16 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 			packageEnabledCounts,
 			packageDescriptions,
 			packageInstallPaths,
+			caches,
 		),
 	]);
 
 	const categories: ResourceIndex["categories"] = {
 		packages: sortItems([...projectPackages, ...userPackages]),
-		skills: mapResolvedResources("skills", resolvedPaths.skills, exposedResources),
-		extensions: mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources),
-		prompts: mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources),
-		themes: buildThemeItems(resolvedPaths.themes, selectedTheme),
+		skills: await mapResolvedResources("skills", resolvedPaths.skills, exposedResources, caches),
+		extensions: await mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources, caches),
+		prompts: await mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources, caches),
+		themes: await buildThemeItems(resolvedPaths.themes, selectedTheme, caches),
 	};
 
 	return { categories };
@@ -70,9 +82,10 @@ async function buildPackageItems(
 	enabledSummaries: Map<string, PackageEnabledSummary>,
 	packageDescriptions: Map<string, string>,
 	packageInstallPaths: Map<string, string>,
+	caches: DiscoveryCaches,
 ): Promise<ResourceItem[]> {
-	return sortItems(
-		packages.map((source) => {
+	const items = await Promise.all(
+		packages.map(async (source) => {
 			const spec = typeof source === "string" ? source : source.source;
 			const packageCounts = counts.get(toPackageKey(scope, spec));
 			const enabledSummary = enabledSummaries.get(toPackageKey(scope, spec));
@@ -88,30 +101,36 @@ async function buildPackageItems(
 					packageDescription ??
 					"No package description found. Add a `description` field to this package's package.json.",
 				enabled: isPackageSourceEnabled(source),
+				updatedAt: await inferUpdatedAtFromPackage(spec, installPath, caches),
 				counts: packageCounts,
 				enabledSummary,
 				installPath,
 			};
 		}),
 	);
+	return sortItems(items);
 }
 
-function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes">>(
+async function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes">>(
 	category: TCategory,
 	resources: ResolvedResource[],
 	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes">; package: string; path: string }>,
-): FileResourceItem[] {
-	return sortItems(
+	caches: DiscoveryCaches,
+): Promise<FileResourceItem[]> {
+	const items = await Promise.all(
 		resources
 			.filter((resource) => isSupportedScope(resource.metadata.scope))
-			.map((resource) => createFileItem(category, resource, exposedResources)),
+			.map((resource) => createFileItem(category, resource, exposedResources, caches)),
 	);
+	return sortItems(items);
 }
 
-function buildThemeItems(resources: ResolvedResource[], selectedTheme: string | undefined): ThemeResourceItem[] {
-	const items = resources
-		.filter((resource) => isSupportedScope(resource.metadata.scope))
-		.map((resource) => createThemeItem(resource, selectedTheme));
+async function buildThemeItems(resources: ResolvedResource[], selectedTheme: string | undefined, caches: DiscoveryCaches): Promise<ThemeResourceItem[]> {
+	const items = await Promise.all(
+		resources
+			.filter((resource) => isSupportedScope(resource.metadata.scope))
+			.map((resource) => createThemeItem(resource, selectedTheme, caches)),
+	);
 
 	for (const name of ["dark", "light"] as const) {
 		items.push({
@@ -123,17 +142,19 @@ function buildThemeItems(resources: ResolvedResource[], selectedTheme: string | 
 			description: `Built-in Pi theme: ${name}`,
 			enabled: name === selectedTheme,
 			builtin: true,
+			updatedAt: 0,
 		});
 	}
 
 	return sortItems(items);
 }
 
-function createFileItem(
+async function createFileItem(
 	category: Exclude<ResourceCategory, "packages" | "themes">,
 	resource: ResolvedResource,
 	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes">; package: string; path: string }>,
-): FileResourceItem {
+	caches: DiscoveryCaches,
+): Promise<FileResourceItem> {
 	const scope = resource.metadata.scope;
 	if (!isSupportedScope(scope)) {
 		throw new Error(`Unsupported resource scope: ${scope}`);
@@ -150,6 +171,7 @@ function createFileItem(
 		source: normalizeSource(resource.metadata),
 		description: buildResourceDescription(category, scope, resource.metadata, resource.path),
 		enabled: resource.enabled,
+		updatedAt: await safeMtimeMs(resource.path, caches),
 		packageSource,
 		packageRelativePath,
 		exposed: Boolean(
@@ -166,7 +188,7 @@ function createFileItem(
 	};
 }
 
-function createThemeItem(resource: ResolvedResource, selectedTheme: string | undefined): ThemeResourceItem {
+async function createThemeItem(resource: ResolvedResource, selectedTheme: string | undefined, caches: DiscoveryCaches): Promise<ThemeResourceItem> {
 	const scope = resource.metadata.scope;
 	if (!isSupportedScope(scope)) {
 		throw new Error(`Unsupported resource scope: ${scope}`);
@@ -181,6 +203,7 @@ function createThemeItem(resource: ResolvedResource, selectedTheme: string | und
 		source: normalizeSource(resource.metadata),
 		description: buildResourceDescription("themes", scope, resource.metadata, resource.path),
 		enabled: name === selectedTheme,
+		updatedAt: await safeMtimeMs(resource.path, caches),
 		path: resource.path,
 		packageSource: resource.metadata.origin === "package" ? resource.metadata.source : undefined,
 		packageRelativePath: getRelativeResourcePath(resource),
@@ -238,7 +261,7 @@ function buildPackageInstallPathMap(resolvedPaths: ResolvedPaths): Map<string, s
 	return installPaths;
 }
 
-async function buildPackageDescriptionMap(resolvedPaths: ResolvedPaths): Promise<Map<string, string>> {
+async function buildPackageDescriptionMap(resolvedPaths: ResolvedPaths, caches: DiscoveryCaches): Promise<Map<string, string>> {
 	const packageDirs = new Map<string, string>();
 	for (const category of RESOURCE_CATEGORIES) {
 		if (category === "packages") continue;
@@ -251,19 +274,25 @@ async function buildPackageDescriptionMap(resolvedPaths: ResolvedPaths): Promise
 	const descriptions = new Map<string, string>();
 	await Promise.all(
 		Array.from(packageDirs.entries()).map(async ([key, baseDir]) => {
-			const description = await readPackageDescription(resolve(baseDir, "package.json"));
+			const description = await readPackageDescription(resolve(baseDir, "package.json"), caches);
 			if (description) descriptions.set(key, description);
 		}),
 	);
 	return descriptions;
 }
 
-async function readPackageDescription(packageJsonPath: string): Promise<string | undefined> {
+async function readPackageDescription(packageJsonPath: string, caches: DiscoveryCaches): Promise<string | undefined> {
+	if (caches.packageDescriptionByPath.has(packageJsonPath)) {
+		return caches.packageDescriptionByPath.get(packageJsonPath);
+	}
 	try {
 		const raw = await readFile(packageJsonPath, "utf8");
 		const parsed = JSON.parse(raw) as { description?: unknown };
-		return typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : undefined;
+		const description = typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : undefined;
+		caches.packageDescriptionByPath.set(packageJsonPath, description);
+		return description;
 	} catch {
+		caches.packageDescriptionByPath.set(packageJsonPath, undefined);
 		return undefined;
 	}
 }
@@ -321,6 +350,42 @@ function buildResourceDescription(
 	const location = scope === "project" ? "project" : "user";
 	const origin = metadata.origin === "package" ? `provided by package ${metadata.source}` : `${normalizeSource(metadata)} path`;
 	return `${categoryText} in ${location} scope, ${origin}. Path: ${path}`;
+}
+
+async function safeMtimeMs(path: string | undefined, caches: DiscoveryCaches): Promise<number | undefined> {
+	if (!path) return undefined;
+	if (caches.mtimeByPath.has(path)) {
+		return caches.mtimeByPath.get(path);
+	}
+	try {
+		const info = await stat(path);
+		caches.mtimeByPath.set(path, info.mtimeMs);
+		return info.mtimeMs;
+	} catch {
+		caches.mtimeByPath.set(path, undefined);
+		return undefined;
+	}
+}
+
+async function inferUpdatedAtFromPackage(spec: string, installPath: string | undefined, caches: DiscoveryCaches): Promise<number | undefined> {
+	// Prefer installed package's package.json mtime, then the directory mtime.
+	if (installPath) {
+		const pkgJsonTime = await safeMtimeMs(resolve(installPath, "package.json"), caches);
+		if (pkgJsonTime !== undefined) return pkgJsonTime;
+		const dirTime = await safeMtimeMs(installPath, caches);
+		if (dirTime !== undefined) return dirTime;
+	}
+
+	// If the spec is a local path, try to stat it directly.
+	if (!isRemotePackageSource(spec)) {
+		const normalized = spec.replace(/[\\/]+$/, "");
+		const pkgJsonTime = await safeMtimeMs(resolve(normalized, "package.json"), caches);
+		if (pkgJsonTime !== undefined) return pkgJsonTime;
+		const dirTime = await safeMtimeMs(normalized, caches);
+		if (dirTime !== undefined) return dirTime;
+	}
+
+	return undefined;
 }
 
 function sortItems<T extends ResourceItem>(items: T[]): T[] {

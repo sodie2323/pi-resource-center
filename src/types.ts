@@ -22,6 +22,8 @@ export interface PackageResourceItem {
 	source: string;
 	description: string;
 	enabled: boolean;
+	/** Unix epoch millis for "last updated" sorting (best-effort). */
+	updatedAt?: number;
 	counts?: PackageResourceCounts;
 	enabledSummary?: PackageEnabledSummary;
 	installPath?: string;
@@ -39,6 +41,8 @@ export interface FileResourceItem {
 	source: string;
 	description: string;
 	enabled: boolean;
+	/** Unix epoch millis for "last updated" sorting (best-effort). */
+	updatedAt?: number;
 	packageSource?: string;
 	packageRelativePath?: string;
 	exposed?: boolean;
@@ -52,6 +56,8 @@ export interface ThemeResourceItem {
 	source: string;
 	description: string;
 	enabled: boolean;
+	/** Unix epoch millis for "last updated" sorting (best-effort). */
+	updatedAt?: number;
 	path?: string;
 	builtin?: boolean;
 	packageSource?: string;
