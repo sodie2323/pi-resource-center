@@ -1,7 +1,7 @@
 # pi-resource-center
 
 [![npm version](https://img.shields.io/npm/v/pi-resource-center.svg)](https://www.npmjs.com/package/pi-resource-center)
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-center)
 
@@ -15,7 +15,7 @@ A `pi-package` for [Pi](https://github.com/mariozechner/pi-coding-agent) that ad
 - prompts
 - themes
 
-It provides a keyboard-driven TUI resource browser, resource discovery across project and user scope, and command-based actions for enabling, disabling, removing, updating, and applying resources.
+It provides a keyboard-driven TUI resource browser, resource discovery across project and user scope, and command-based actions for enabling, disabling, removing, pinning, exposing, updating, and applying resources.
 
 ## Table of contents
 
@@ -43,9 +43,7 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
   - [Project scope](#project-scope)
   - [User scope](#user-scope)
   - [Package sources](#package-sources)
-- [Repository structure](#repository-structure)
 - [Requirements](#requirements)
-- [Publishing](#publishing)
 - [Notes](#notes)
 - [License](#license)
 
@@ -55,6 +53,7 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - Fast search and keyboard navigation in a dedicated TUI
 - Discovery across project settings, user settings, conventional folders, and package sources
 - Enable/disable top-level resources and package-contained resources from the browser or command line
+- Pin resources to keep them at the top of sorted lists
 - Apply built-in and custom themes from the browser or command line
 - Remove configured resources from settings
 - Add package sources via `/resource add ...`
@@ -116,15 +115,13 @@ pi install E:/code/pi-resource-center
 
 ### Important note about local installs
 
-For local paths, Pi does **not** copy the package into a separate install directory. It stores the path in Pi settings and loads the package directly from that folder.
+For local paths, Pi loads the package directly from that folder instead of copying it elsewhere.
 
-That means after changing the source during development, you usually just need:
+If you update the local package after installing it, run:
 
 ```bash
 /reload
 ```
-
-If you are iterating on this package itself, local install + `/reload` is the fastest workflow.
 
 ## Usage
 
@@ -197,11 +194,9 @@ Examples:
 /resource hide extension my-package/index.ts
 ```
 
-Package-contained resources can also be toggled. These are matched by name, source, path, and package-relative path when available.
+Package-contained resources can also be toggled. Matching works across common fields such as name, source, path, and package-relative path when available.
 
 `/resource expose` and `/resource hide` apply to package-contained extensions, skills, and prompts only.
-
-Their argument completion is scoped to package-contained resources, so exposing common package assets is easier from the command line.
 
 ## Theme behavior
 
@@ -231,19 +226,21 @@ Examples:
 - `PageUp/PageDown` — jump through the list
 - `Enter` — open resource details
 - `Space` — enable/disable or apply the selected item
+- `P` — pin or unpin the selected item
 - `Shift+S` — open Resource Center settings
 - `Esc` — close or go back
 
-Items from local packages may show a package marker and package-relative path in the list and detail view.
+Pinned resources are kept at the top of sorted lists.
 
 ### Detail view
 
 - `Up/Down` — choose an action
 - `Enter` — confirm action
+- `P` — pin or unpin the current item
 - `Shift+S` — open Resource Center settings
 - `Esc` — return to the list
 
-For packages, the detail view includes a **Manage Resources** action that opens contained extensions, skills, prompts, and themes for that package.
+For packages, the detail view includes a **Manage Resources** action that opens the package contents view, where you can browse contained extensions, skills, prompts, and themes, search within the package, and manage them directly.
 
 For package-contained extensions, skills, and prompts, the detail view also includes a **Show in Category** / **Hide from Category** action.
 
@@ -264,10 +261,9 @@ Resource Center stores its own UI preferences and "exposed" package resource sta
 - Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
 - macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
 
-This file includes:
+This file stores the Resource Center's own UI preferences together with pinned resources and exposed package-resource state.
 
-- UI preferences set in the Settings view (what fields to show, search behavior, package preview sizing)
-- `exposedResources`: which package-contained extensions/skills/prompts are shown in their top-level categories
+Stale `pinned` and `exposedResources` entries are pruned automatically when the plugin refreshes and before settings are saved.
 
 > Older versions used `resource-hub.json`. It is safe to delete legacy `resource-hub.json` files once you've confirmed your `exposedResources` are present in the settings file.
 
@@ -315,20 +311,6 @@ Supported remote source prefixes:
 - `http://`
 - `https://`
 
-## Repository structure
-
-Entry point:
-
-- `extensions/resource-center/index.ts`
-
-Core implementation:
-
-- `src/index.ts` — command registration and command actions
-- `src/browser.ts` — TUI resource browser
-- `src/discovery.ts` — resource discovery logic
-- `src/settings.ts` — Pi settings read/write helpers
-- `src/types.ts` — shared resource types
-
 ## Requirements
 
 Peer dependencies:
@@ -336,24 +318,9 @@ Peer dependencies:
 - `@mariozechner/pi-coding-agent`
 - `@mariozechner/pi-tui`
 
-## Publishing
-
-This package is intended to be installable as an npm-hosted Pi package:
-
-```bash
-npm publish
-```
-
-After publishing, users can install it with:
-
-```bash
-pi install npm:pi-resource-center
-```
-
 ## Notes
 
 - The npm package name is `pi-resource-center`
-- The repository is hosted at `sodie2323/pi-resource-center`
 - The `/resource` browser defaults to the `packages` category
 
 ## License

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-04-12
+
+### Added
+- Added pin/unpin support so resources can be kept at the top of sorted lists.
+- Added persistent resource-center state cleanup for stale pinned and exposed entries.
+
+### Changed
+- Reorganized the source tree into `browser/`, `resource/`, and `settings/` modules.
+- Split browser logic into focused modules for actions, input handling, navigation, rendering, and selectors.
+- Centralized resource capability, identity, and user-message helpers for more consistent behavior.
+- Updated the README to better reflect the current user-facing workflow.
+
 ## [0.1.6] - 2026-04-08
 
 ### Fixed
