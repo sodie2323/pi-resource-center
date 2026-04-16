@@ -21,13 +21,14 @@ export type DetailAction = "manage" | "toggle" | "pin" | "expose" | "update" | "
 export type PackageContentCategory = Exclude<ResourceCategory, "packages">;
 export const PACKAGE_CONTENT_CATEGORIES: PackageContentCategory[] = ["extensions", "skills", "prompts", "themes"];
 
-export type SettingsSection = "all" | "display" | "packages" | "search";
-export const SETTINGS_SECTION_ORDER: SettingsSection[] = ["all", "display", "packages", "search"];
+export type SettingsSection = "all" | "display" | "packages" | "search" | "integrations";
+export const SETTINGS_SECTION_ORDER: SettingsSection[] = ["all", "display", "packages", "search", "integrations"];
 export const SETTINGS_SECTION_LABELS: Record<SettingsSection, string> = {
 	all: "All",
 	display: "Display",
 	packages: "Packages",
 	search: "Search",
+	integrations: "Integrations",
 };
 
 export const SORT_MODE_LABELS: Record<ResourceCenterSettings["sortMode"], string> = {

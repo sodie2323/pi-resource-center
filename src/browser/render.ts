@@ -70,7 +70,8 @@ export function renderListPage(args: {
 		const nameText = `${pinBadge}${packageBadge}${item.name}`;
 		const name = selected ? theme.bold(nameText) : theme.fg("text", nameText);
 		const scope = item.scope === "project" ? theme.fg("success", "project") : theme.fg("warning", "user");
-		const source = theme.fg("dim", formatPackageLabel(item.packageSource ?? item.source));
+		const sourceValue = item.packageSource ?? item.sourceLabel ?? item.source;
+		const source = theme.fg("dim", item.packageSource ? formatPackageLabel(sourceValue) : sourceValue);
 		const right = `${scope}  ${source}`;
 		const left = `${marker} ${toggle} ${name}`;
 		const spacing = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
@@ -132,7 +133,7 @@ export function renderDetailPage(args: {
 		: item.enabled
 			? theme.fg("success", "on")
 			: theme.fg("dim", "off");
-	const sourceText = item.packageSource ?? item.source;
+	const sourceText = item.packageSource ?? item.sourceLabel ?? item.source;
 	const pathText = isPackageItem(item) ? item.installPath : "path" in item ? item.path : undefined;
 	const pinnedText = isPinned(item) ? theme.fg("accent", "[pin]") : theme.fg("dim", "no");
 	const lines = [

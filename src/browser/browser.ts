@@ -2,14 +2,18 @@
  * 资源浏览器核心状态容器：负责协调 UI 状态、渲染适配、缓存与回调。
  */
 import { getSettingsListTheme, type Theme } from "@mariozechner/pi-coding-agent";
-import type { ResourceCenterSettings } from "../settings.js";
+import { DEFAULT_EXTERNAL_SKILL_SOURCES, type ResourceCenterSettings } from "../settings.js";
 import {
 	type Component,
 	type Focusable,
 	Input,
 	fuzzyFilter,
+	getKeybindings,
 	SettingsList,
 	type SettingItem,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
 import {
 	CATEGORY_LABELS,
@@ -87,6 +91,9 @@ export class ResourceBrowser implements Component, Focusable {
 	private settingsList: SettingsList | undefined;
 	private settingsListSection: SettingsSection | undefined;
 	private settingsListQuery: string | undefined;
+	private settingsInlineEditItemId: string | undefined;
+	private settingsInlineEditInput: Input | undefined;
+	private settingsInlineEditOriginalValue: string | undefined;
 	private visibleCategoryItemsCache = new Map<ResourceCategory, ResourceItem[]>();
 	private searchTextCache = new Map<string, { base: string; withDescription: string; withPath: string; withDescriptionAndPath: string }>();
 	private containedItemsCache = new Map<string, ResourceItem[]>();
@@ -231,8 +238,7 @@ export class ResourceBrowser implements Component, Focusable {
 			lines.push("");
 			lines.push(...this.wrapBlock(this.renderSettingsSearch(innerWidth), width));
 			lines.push("");
-			const list = this.ensureSettingsList();
-			lines.push(...this.wrapBlock(list.render(innerWidth), width));
+			lines.push(...this.wrapBlock(this.renderSettingsList(innerWidth), width));
 			return lines;
 		}
 		if (this.mode === "packageGroups") {
@@ -494,6 +500,58 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private handleSettingsInput(data: string): void {
+		const kb = getKeybindings();
+		if (this.settingsInlineEditItemId && this.settingsInlineEditInput) {
+			if (kb.matches(data, "tui.select.confirm")) {
+				this.stopInlineSettingsEdit(true);
+				return;
+			}
+			if (kb.matches(data, "tui.select.cancel")) {
+				this.stopInlineSettingsEdit(false);
+				return;
+			}
+			this.settingsInlineEditInput.handleInput(data);
+			return;
+		}
+
+		const selectedItem = this.getSelectedSettingsItem();
+		if (selectedItem?.id.startsWith("externalSkillSourceRow:")) {
+			if (kb.matches(data, "tui.select.confirm")) {
+				this.startInlineSettingsEdit(selectedItem);
+				return;
+			}
+			if (data === " ") {
+				const sourceId = selectedItem.id.slice("externalSkillSourceRow:".length);
+				const nextExternalSkillSources = this.settings.externalSkillSources.map((entry) => entry.id === sourceId ? { ...entry, enabled: !entry.enabled } : entry);
+				this.settings = { ...this.settings, externalSkillSources: nextExternalSkillSources };
+				const updated = nextExternalSkillSources.find((entry) => entry.id === sourceId);
+				if (updated) {
+					this.ensureSettingsList().updateValue(selectedItem.id, `${updated.enabled ? "on " : "off"}  ${updated.path}`);
+				}
+				this.callbacks.onSettingsChange?.(this.settings);
+				this.invalidatePackageCaches();
+				this.applyFilter();
+				return;
+			}
+			if (data === "r" || data === "R") {
+				const sourceId = selectedItem.id.slice("externalSkillSourceRow:".length);
+				if (this.isCustomExternalSkillSource(sourceId)) {
+					this.applySettingsChange(`externalSkillSourceRemove:${sourceId}`, "remove");
+					this.settingsList = undefined;
+					this.settingsListSection = undefined;
+					this.settingsListQuery = undefined;
+				}
+				return;
+			}
+		}
+		if ((data === "a" || data === "A") && this.settingsSection === "integrations") {
+			this.applySettingsChange("externalSkillSourceAdd", "add");
+			this.settingsList = undefined;
+			this.settingsListSection = undefined;
+			this.settingsListQuery = undefined;
+			return;
+		}
+
 		handleSettingsInputMode(data, {
 			settingsReturnMode: this.settingsReturnMode,
 			onSetMode: (mode) => {
@@ -881,6 +939,7 @@ export class ResourceBrowser implements Component, Focusable {
 		this.settingsList = undefined;
 		this.settingsListSection = undefined;
 		this.settingsListQuery = undefined;
+		this.stopInlineSettingsEdit(false);
 		this.mode = "settings";
 	}
 
@@ -888,17 +947,10 @@ export class ResourceBrowser implements Component, Focusable {
 		const query = this.getSettingsQuery();
 		if (!this.settingsList || this.settingsListSection !== this.settingsSection || this.settingsListQuery !== query) {
 			const items = this.getFilteredSettingsItems(this.settingsSection);
-			const baseTheme = getSettingsListTheme();
-			// We render SettingsList inside wrapBlock() (like /resource content blocks). SettingsList already
-			// prefixes some hint lines with two spaces, which would indent too far. Trim those.
-			const adjustedTheme = {
-				...baseTheme,
-				hint: (text: string) => baseTheme.hint(text.replace(/^  /, "")),
-			};
 			this.settingsList = new SettingsList(
 				items,
 				10,
-				adjustedTheme,
+				this.getAdjustedSettingsTheme(),
 				(id, newValue) => this.applySettingsChange(id, newValue),
 				() => {
 					this.mode = this.settingsReturnMode;
@@ -908,6 +960,122 @@ export class ResourceBrowser implements Component, Focusable {
 			this.settingsListQuery = query;
 		}
 		return this.settingsList;
+	}
+
+	private getAdjustedSettingsTheme() {
+		const baseTheme = getSettingsListTheme();
+		return {
+			...baseTheme,
+			hint: (text: string) => baseTheme.hint(text.replace(/^  /, "")),
+		};
+	}
+
+	private renderSettingsList(width: number): string[] {
+		const items = this.getFilteredSettingsItems(this.settingsSection);
+		const theme = this.getAdjustedSettingsTheme();
+		const listState = this.ensureSettingsList() as SettingsList & { selectedIndex?: number };
+		const selectedIndex = Math.max(0, Math.min(listState.selectedIndex ?? 0, Math.max(0, items.length - 1)));
+		const lines: string[] = [];
+		if (items.length === 0) {
+			lines.push(theme.hint("No settings available"));
+			return lines;
+		}
+		const maxVisible = 10;
+		const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), items.length - maxVisible));
+		const endIndex = Math.min(startIndex + maxVisible, items.length);
+		const maxLabelWidth = Math.min(30, Math.max(...items.map((item) => visibleWidth(item.label))));
+		for (let i = startIndex; i < endIndex; i++) {
+			const item = items[i]!;
+			const isSelected = i === selectedIndex;
+			const prefix = isSelected ? theme.cursor : "  ";
+			const prefixWidth = visibleWidth(prefix);
+			const labelPadded = item.label + " ".repeat(Math.max(0, maxLabelWidth - visibleWidth(item.label)));
+			const labelText = theme.label(labelPadded, isSelected);
+			const separator = "  ";
+			const usedWidth = prefixWidth + maxLabelWidth + visibleWidth(separator);
+			const valueMaxWidth = Math.max(1, width - usedWidth - 2);
+			const valueText = item.id === this.settingsInlineEditItemId && this.settingsInlineEditInput
+				? this.renderInlineSettingsValue(item, valueMaxWidth, isSelected)
+				: theme.value(truncateToWidth(item.currentValue, valueMaxWidth, ""), isSelected);
+			lines.push(truncateToWidth(prefix + labelText + separator + valueText, width));
+		}
+		if (startIndex > 0 || endIndex < items.length) {
+			lines.push(theme.hint(truncateToWidth(`(${selectedIndex + 1}/${items.length})`, width - 2, "")));
+		}
+		const selectedItem = items[selectedIndex];
+		if (selectedItem?.description) {
+			lines.push("");
+			for (const line of wrapTextWithAnsi(selectedItem.description, Math.max(1, width - 2))) {
+				lines.push(theme.description(line));
+			}
+		}
+		lines.push("");
+		lines.push(truncateToWidth(theme.hint(this.getSettingsHint(selectedItem)), width));
+		return lines;
+	}
+
+	private getSettingsHint(item: SettingItem | undefined): string {
+		if (this.settingsInlineEditItemId) return "Type to edit · Enter save · Esc cancel";
+		if (!item) return "Enter change · Esc back";
+		if (item.id.startsWith("externalSkillSourceRow:")) return this.isCustomExternalSkillSource(item.id.slice("externalSkillSourceRow:".length))
+			? "Enter edit · Space toggle · A add · R remove · Esc back"
+			: "Enter edit · Space toggle · A add · Esc back";
+		return "Enter change · Esc back";
+	}
+
+	private getSelectedSettingsItem(): SettingItem | undefined {
+		const items = this.getFilteredSettingsItems(this.settingsSection);
+		const listState = this.ensureSettingsList() as SettingsList & { selectedIndex?: number };
+		const selectedIndex = listState.selectedIndex ?? 0;
+		return items[selectedIndex];
+	}
+
+	private startInlineSettingsEdit(item: SettingItem): void {
+		this.settingsInlineEditItemId = item.id;
+		this.settingsInlineEditOriginalValue = item.currentValue;
+		this.settingsInlineEditInput = new Input();
+		this.settingsInlineEditInput.focused = true;
+		if (item.id.startsWith("externalSkillSourceRow:")) {
+			const sourceId = item.id.slice("externalSkillSourceRow:".length);
+			const source = this.settings.externalSkillSources.find((entry) => entry.id === sourceId);
+			this.settingsInlineEditInput.setValue(source?.path ?? item.currentValue);
+			return;
+		}
+		this.settingsInlineEditInput.setValue(item.currentValue);
+	}
+
+	private renderInlineSettingsValue(item: SettingItem, valueMaxWidth: number, isSelected: boolean): string {
+		if (!item.id.startsWith("externalSkillSourceRow:")) {
+			return (this.settingsInlineEditInput?.render(valueMaxWidth + 2)[0] ?? "> ").slice(2);
+		}
+		const sourceId = item.id.slice("externalSkillSourceRow:".length);
+		const source = this.settings.externalSkillSources.find((entry) => entry.id === sourceId);
+		const statePrefix = `${source?.enabled ? "on " : "off"}  `;
+		const stateText = this.getAdjustedSettingsTheme().value(statePrefix, isSelected);
+		const inputWidth = Math.max(1, valueMaxWidth - visibleWidth(statePrefix));
+		const inputText = (this.settingsInlineEditInput?.render(inputWidth + 2)[0] ?? "> ").slice(2);
+		return truncateToWidth(`${stateText}${inputText}`, valueMaxWidth, "");
+	}
+
+	private stopInlineSettingsEdit(save: boolean): void {
+		const itemId = this.settingsInlineEditItemId;
+		const input = this.settingsInlineEditInput;
+		const originalValue = this.settingsInlineEditOriginalValue;
+		this.settingsInlineEditItemId = undefined;
+		this.settingsInlineEditInput = undefined;
+		this.settingsInlineEditOriginalValue = undefined;
+		if (!itemId) return;
+		if (!save) {
+			if (originalValue !== undefined) this.ensureSettingsList().updateValue(itemId, originalValue);
+			return;
+		}
+		if (!input) return;
+		this.applySettingsChange(itemId, input.getValue());
+		if (itemId.startsWith("externalSkillSourceRow:")) {
+			const sourceId = itemId.slice("externalSkillSourceRow:".length);
+			const source = this.settings.externalSkillSources.find((entry) => entry.id === sourceId);
+			if (source) this.ensureSettingsList().updateValue(itemId, `${source.enabled ? "on " : "off"}  ${source.path}`);
+		}
 	}
 
 	private buildSettingsItems(section: SettingsSection): SettingItem[] {
@@ -970,15 +1138,24 @@ export class ResourceBrowser implements Component, Focusable {
 			},
 		];
 
+		const integrations: SettingItem[] = this.settings.externalSkillSources.map((source) => ({
+			id: `externalSkillSourceRow:${source.id}`,
+			label: `${source.label} skills`,
+			description: `${source.enabled ? "Enabled" : "Disabled"}. Press Enter to edit path inline, Space to toggle on/off.`,
+			currentValue: `${source.enabled ? "on " : "off"}  ${source.path}`,
+		}));
+
 		switch (section) {
 			case "all":
-				return [...display, ...packages, ...search];
+				return [...display, ...packages, ...search, ...integrations];
 			case "display":
 				return display;
 			case "packages":
 				return packages;
 			case "search":
 				return search;
+			case "integrations":
+				return integrations;
 		}
 	}
 
@@ -994,7 +1171,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private applySettingsChange(id: string, newValue: string): void {
-		const next = { ...this.settings };
+		const next = { ...this.settings, externalSkillSources: [...this.settings.externalSkillSources] };
 		switch (id) {
 			case "showSource":
 				next.showSource = newValue === "true";
@@ -1018,6 +1195,22 @@ export class ResourceBrowser implements Component, Focusable {
 				next.searchIncludePath = newValue === "true";
 				break;
 			default:
+				if (id === "externalSkillSourceAdd") {
+					next.externalSkillSources = [...this.settings.externalSkillSources, this.createCustomExternalSkillSource()];
+					break;
+				}
+				if (id.startsWith("externalSkillSourceRemove:")) {
+					const sourceId = id.slice("externalSkillSourceRemove:".length);
+					next.externalSkillSources = this.settings.externalSkillSources.filter((source) => source.id !== sourceId);
+					break;
+				}
+				if (id.startsWith("externalSkillSourceRow:")) {
+					const sourceId = id.slice("externalSkillSourceRow:".length);
+					next.externalSkillSources = this.settings.externalSkillSources.map((source) => source.id === sourceId
+						? { ...source, path: newValue.trim() || source.path }
+						: source);
+					break;
+				}
 				return;
 		}
 		this.settings = next;
@@ -1025,6 +1218,24 @@ export class ResourceBrowser implements Component, Focusable {
 		this.callbacks.onSettingsChange?.(this.settings);
 		this.invalidatePackageCaches();
 		this.applyFilter();
+	}
+
+	private isCustomExternalSkillSource(sourceId: string): boolean {
+		return !DEFAULT_EXTERNAL_SKILL_SOURCES.some((source) => source.id === sourceId);
+	}
+
+	private createCustomExternalSkillSource(): ResourceCenterSettings["externalSkillSources"][number] {
+		const customIds = this.settings.externalSkillSources
+			.filter((source) => this.isCustomExternalSkillSource(source.id))
+			.map((source) => source.id);
+		let index = 1;
+		while (customIds.includes(`custom-${index}`)) index += 1;
+		return {
+			id: `custom-${index}`,
+			label: `Custom ${index}`,
+			path: `~/.pi/agent/custom-skills-${index}`,
+			enabled: true,
+		};
 	}
 
 	private moveSettingsSection(delta: -1 | 1): void {

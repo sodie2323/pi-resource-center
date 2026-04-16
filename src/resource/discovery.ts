@@ -1,7 +1,7 @@
 /**
  * 发现并构建资源索引，包括 package、extensions、skills、prompts 和 themes。
  */
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import {
 	DefaultPackageManager,
@@ -10,7 +10,20 @@ import {
 	type ResolvedPaths,
 	type ResolvedResource,
 } from "@mariozechner/pi-coding-agent";
-import { getExposedResources, isPackageSourceEnabled, syncPrunedExposedResources, type PackageSource, USER_AGENT_DIR } from "../settings.js";
+import {
+	getExposedResources,
+	isPackageSourceEnabled,
+	getPathResourceEnabledState,
+	getUserSettingsPath,
+	readResourceCenterSettings,
+	readSettingsFile,
+	resolveHomePath,
+	syncPrunedExposedResources,
+	type ExternalSkillSourceSetting,
+	type PackageSource,
+	type SettingsFile,
+	USER_AGENT_DIR,
+} from "../settings.js";
 import { getPackageKey, getPackageResourceId } from "./identity.js";
 import type {
 	FileResourceItem,
@@ -47,6 +60,8 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 	const packageDescriptions = await buildPackageDescriptionMap(resolvedPaths, caches);
 	const packageInstallPaths = buildPackageInstallPathMap(resolvedPaths);
 	const exposedResources = await getExposedResources(cwd);
+	const resourceCenterSettings = await readResourceCenterSettings();
+	const userSettingsFile = await readSettingsFile(getUserSettingsPath());
 	const [projectPackages, userPackages] = await Promise.all([
 		buildPackageItems(
 			(projectSettings.packages ?? []) as PackageSource[],
@@ -68,9 +83,12 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 		),
 	]);
 
+	const resolvedSkillItems = await mapResolvedResources("skills", resolvedPaths.skills, exposedResources, caches);
+	const externalSkillItems = await discoverExternalSkillResources(resourceCenterSettings.externalSkillSources, userSettingsFile, caches, resolvedSkillItems);
+
 	const categories: ResourceIndex["categories"] = {
 		packages: sortItems([...projectPackages, ...userPackages]),
-		skills: await mapResolvedResources("skills", resolvedPaths.skills, exposedResources, caches),
+		skills: sortItems([...resolvedSkillItems, ...externalSkillItems]),
 		extensions: await mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources, caches),
 		prompts: await mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources, caches),
 		themes: await buildThemeItems(resolvedPaths.themes, selectedTheme, caches),
@@ -99,7 +117,7 @@ async function buildPackageItems(
 			const packageDescription = packageDescriptions.get(packageKey);
 			const installPath = packageInstallPaths.get(packageKey);
 			return {
-				category: "packages",
+				category: "packages" as const,
 				id: getPackageResourceId(scope, spec),
 				name: spec,
 				scope,
@@ -203,7 +221,7 @@ async function createThemeItem(resource: ResolvedResource, selectedTheme: string
 
 	const name = basename(resource.path, extname(resource.path));
 	return {
-		category: "themes",
+		category: "themes" as const,
 		id: `themes:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
 		name,
 		scope,
@@ -215,6 +233,77 @@ async function createThemeItem(resource: ResolvedResource, selectedTheme: string
 		packageSource: resource.metadata.origin === "package" ? resource.metadata.source : undefined,
 		packageRelativePath: getRelativeResourcePath(resource),
 	};
+}
+
+async function discoverExternalSkillResources(
+	sources: ExternalSkillSourceSetting[],
+	userSettings: SettingsFile | undefined,
+	caches: DiscoveryCaches,
+	existingItems: FileResourceItem[],
+): Promise<FileResourceItem[]> {
+	const existingPaths = new Set(existingItems.map((item) => normalizeConfigPath(item.path)));
+	const items: FileResourceItem[] = [];
+	for (const source of sources) {
+		if (!source.enabled) continue;
+		const rootPath = resolveHomePath(source.path);
+		const skillPaths = await collectSkillPaths(rootPath);
+		for (const skillPath of skillPaths) {
+			const normalizedSkillPath = normalizeConfigPath(skillPath);
+			if (existingPaths.has(normalizedSkillPath)) continue;
+			existingPaths.add(normalizedSkillPath);
+			items.push({
+				category: "skills" as const,
+				id: `skills:user:plugin:${source.id}:${skillPath}`,
+				name: inferName("skills", skillPath),
+				scope: "user",
+				path: skillPath,
+				source: "plugin",
+				sourceLabel: source.label,
+				description: `Skill resource in user scope, provided by external source ${source.label}. Path: ${skillPath}`,
+				enabled: getPathResourceEnabledState(userSettings, "skills", skillPath) ?? true,
+				updatedAt: await safeMtimeMs(skillPath, caches),
+				managedByPluginSettings: true,
+				externalSourceId: source.id,
+			});
+		}
+	}
+	return items;
+}
+
+async function collectSkillPaths(path: string): Promise<string[]> {
+	try {
+		const info = await stat(path);
+		if (info.isFile()) {
+			return extname(path).toLowerCase() === ".md" ? [path] : [];
+		}
+		if (!info.isDirectory()) return [];
+		const found = new Set<string>();
+		await walkSkillDirectory(path, found);
+		return Array.from(found);
+	} catch {
+		return [];
+	}
+}
+
+async function walkSkillDirectory(dir: string, found: Set<string>): Promise<void> {
+	let entries: Awaited<ReturnType<typeof readdir>>;
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+
+	for (const entry of entries) {
+		const entryPath = resolve(dir, entry.name);
+		if (entry.isDirectory()) {
+			await walkSkillDirectory(entryPath, found);
+			continue;
+		}
+		if (!entry.isFile()) continue;
+		if (entry.name === "SKILL.md") {
+			found.add(entryPath);
+		}
+	}
 }
 
 function buildPackageCountMap(resolvedPaths: ResolvedPaths): Map<string, PackageResourceCounts> {

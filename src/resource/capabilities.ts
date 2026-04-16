@@ -28,7 +28,7 @@ export function isBuiltinTheme(item: ResourceItem): boolean {
 }
 
 export function canRemoveResourceIndividually(item: ResourceItem): boolean {
-	return !isContainedResource(item) && !isBuiltinTheme(item);
+	return !isContainedResource(item) && !isBuiltinTheme(item) && !("managedByPluginSettings" in item && item.managedByPluginSettings);
 }
 
 export function supportsPackageUpdate(item: ResourceItem): boolean {

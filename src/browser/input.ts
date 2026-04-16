@@ -175,7 +175,12 @@ export function handleSettingsInput(data: string, args: {
 	onResetSettingsListCache: () => void;
 }): void {
 	const kb = getKeybindings();
-	if (kb.matches(data, "tui.select.cancel")) return args.onSetMode(args.settingsReturnMode);
+	const settingsList = args.settingsList();
+	const activeSubmenu = Boolean((settingsList as SettingsList & { submenuComponent?: unknown }).submenuComponent);
+	if (activeSubmenu) {
+		settingsList.handleInput?.(data);
+		return;
+	}
 	if (kb.matches(data, "tui.editor.cursorLeft")) return args.onMoveSettingsSection(-1);
 	if (kb.matches(data, "tui.editor.cursorRight") || kb.matches(data, "tui.input.tab")) return args.onMoveSettingsSection(1);
 	if (
@@ -184,9 +189,10 @@ export function handleSettingsInput(data: string, args: {
 		kb.matches(data, "tui.select.pageUp") ||
 		kb.matches(data, "tui.select.pageDown") ||
 		kb.matches(data, "tui.select.confirm") ||
+		kb.matches(data, "tui.select.cancel") ||
 		data === " "
 	) {
-		args.settingsList().handleInput?.(data);
+		settingsList.handleInput?.(data);
 		return;
 	}
 	const before = args.searchInput.getValue();

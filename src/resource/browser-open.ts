@@ -21,6 +21,7 @@ import type { ResourceCategory, ResourceItem } from "../types.js";
 export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const resources = await discoverResources(ctx.cwd);
 	const resourceCenterSettings = await readResourceCenterSettings();
+	let currentResourceCenterSettings = resourceCenterSettings;
 	let hasPendingChanges = false;
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
@@ -156,8 +157,17 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			onUpdate: (item) => void updatePackage(item),
 			onRemove: (item) => void removeItem(item),
 			onSettingsChange: (settings) => {
-				void discoverResources(ctx.cwd)
-					.then((resources) => saveResourceCenterSettings(settings, resources))
+				const previousExternalSources = JSON.stringify(currentResourceCenterSettings.externalSkillSources);
+				const nextExternalSources = JSON.stringify(settings.externalSkillSources);
+				const externalSourcesChanged = previousExternalSources !== nextExternalSources;
+				if (externalSourcesChanged) hasPendingChanges = true;
+				currentResourceCenterSettings = settings;
+				void saveResourceCenterSettings(settings)
+					.then(async () => {
+						if (externalSourcesChanged) await refreshBrowser();
+						const resources = await discoverResources(ctx.cwd);
+						await saveResourceCenterSettings(settings, resources);
+					})
 					.catch((error: unknown) => {
 						const message = error instanceof Error ? error.message : String(error);
 						ctx.ui.notify(`Failed to save resource center settings: ${message}`, "error");

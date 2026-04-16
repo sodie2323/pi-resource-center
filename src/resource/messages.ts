@@ -6,9 +6,11 @@ import type { ResourceItem } from "../types.js";
 
 export function getRemoveBlockedMessage(item: ResourceItem): string | undefined {
 	if (canRemoveResourceIndividually(item)) return undefined;
-	return isContainedResource(item)
-		? "This resource comes from a package and can't be removed individually. Disable it instead."
-		: `Built-in theme "${item.name}" can't be removed.`;
+	if (isContainedResource(item)) return "This resource comes from a package and can't be removed individually. Disable it instead.";
+	if ("managedByPluginSettings" in item && item.managedByPluginSettings) {
+		return "This resource comes from an external skill source managed by plugin settings. Disable that source in Settings instead.";
+	}
+	return `Built-in theme "${item.name}" can't be removed.`;
 }
 
 export function getToggleSuccessMessage(item: ResourceItem, settingsPath: string): string {

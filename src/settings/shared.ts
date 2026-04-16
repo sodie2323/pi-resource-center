@@ -16,6 +16,13 @@ interface PackageSourceFilter {
 
 export type PackageSource = string | PackageSourceFilter;
 
+export interface ExternalSkillSourceSetting {
+	id: string;
+	label: string;
+	path: string;
+	enabled: boolean;
+}
+
 export interface SettingsShape {
 	theme?: string;
 	packages?: PackageSource[];
@@ -49,11 +56,18 @@ export interface ResourceCenterSettings {
 	packagePreviewLimit: 3 | 5 | 8;
 	searchIncludeDescription: boolean;
 	searchIncludePath: boolean;
+	externalSkillSources: ExternalSkillSourceSetting[];
 }
 
 export interface ResourceCenterSettingsFile extends ResourceCenterSettings {
 	exposedResources?: ExposedResourceEntry[];
 }
+
+export const DEFAULT_EXTERNAL_SKILL_SOURCES: ExternalSkillSourceSetting[] = [
+	{ id: "claude", label: "Claude", path: "~/.claude/skills", enabled: false },
+	{ id: "codex", label: "Codex", path: "~/.codex/skills", enabled: false },
+	{ id: "opencode", label: "OpenCode", path: "~/.config/opencode/skills", enabled: false },
+];
 
 export const DEFAULT_RESOURCE_CENTER_SETTINGS: ResourceCenterSettings = {
 	showSource: true,
@@ -64,6 +78,7 @@ export const DEFAULT_RESOURCE_CENTER_SETTINGS: ResourceCenterSettings = {
 	packagePreviewLimit: 5,
 	searchIncludeDescription: true,
 	searchIncludePath: true,
+	externalSkillSources: DEFAULT_EXTERNAL_SKILL_SOURCES,
 };
 
 export const PROJECT_AGENT_DIR = ".pi";
@@ -184,4 +199,10 @@ export function toSettingsPath(path: string, settingsDir: string): string {
 	const relativePath = relative(settingsDir, resolvedPath);
 	const settingsPath = relativePath && !relativePath.startsWith("..") ? relativePath : resolvedPath;
 	return settingsPath.replace(/\\/g, "/");
+}
+
+export function resolveHomePath(path: string): string {
+	if (path === "~") return homedir();
+	if (path.startsWith("~/") || path.startsWith("~\\")) return resolve(homedir(), path.slice(2));
+	return resolve(path);
 }

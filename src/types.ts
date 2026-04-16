@@ -23,6 +23,7 @@ export interface PackageResourceItem {
 	name: string;
 	scope: ResourceScope;
 	source: string;
+	sourceLabel?: string;
 	description: string;
 	enabled: boolean;
 	/** Unix epoch millis for "last updated" sorting (best-effort). */
@@ -42,8 +43,11 @@ export interface FileResourceItem {
 	scope: ResourceScope;
 	path: string;
 	source: string;
+	sourceLabel?: string;
 	description: string;
 	enabled: boolean;
+	managedByPluginSettings?: boolean;
+	externalSourceId?: string;
 	/** Unix epoch millis for "last updated" sorting (best-effort). */
 	updatedAt?: number;
 	packageSource?: string;
@@ -57,6 +61,7 @@ export interface ThemeResourceItem {
 	name: string;
 	scope: ResourceScope;
 	source: string;
+	sourceLabel?: string;
 	description: string;
 	enabled: boolean;
 	/** Unix epoch millis for "last updated" sorting (best-effort). */

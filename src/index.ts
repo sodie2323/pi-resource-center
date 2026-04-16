@@ -6,6 +6,7 @@ import { discoverResources } from "./resource/discovery.js";
 import { openResourceBrowser } from "./resource/browser-open.js";
 import { ResourceCompletionProvider } from "./resource/completions.js";
 import { handleAddCommand, handleExposureCommand, handleMutateCommand } from "./resource/commands.js";
+import { readResourceCenterSettings, syncExternalSkillSourcesToPiSettings } from "./settings.js";
 import type { ResourceCategory } from "./types.js";
 
 const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
@@ -22,7 +23,13 @@ export default function resourceCenter(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		completions.setCwd(ctx.cwd);
+		const settings = await readResourceCenterSettings();
+		await syncExternalSkillSourcesToPiSettings(settings.externalSkillSources, settings.externalSkillSources);
 		await completions.refresh(ctx.cwd);
+	});
+
+	pi.on("resources_discover", async () => {
+		return {};
 	});
 }
 
