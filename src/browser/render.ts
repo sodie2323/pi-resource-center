@@ -142,6 +142,9 @@ export function renderDetailPage(args: {
 		truncateToWidth(`${theme.fg("muted", "Pinned")}: ${pinnedText}`, width, "…"),
 		truncateToWidth(`${theme.fg("muted", "Scope")}: ${item.scope}`, width, "…"),
 		truncateToWidth(`${theme.fg("muted", "Name")}: ${item.name}`, width, "…"),
+		...(item.category === "prompts" && "argumentHint" in item && item.argumentHint
+			? [truncateToWidth(`${theme.fg("muted", "Argument Hint")}: ${item.argumentHint}`, width, "…")]
+			: []),
 		...(settings.showSource ? [truncateToWidth(`${theme.fg("muted", "Source")}: ${sourceText}`, width, "…")] : []),
 		...(settings.showPathInPackage && item.packageRelativePath
 			? [truncateToWidth(`${theme.fg("muted", "Path in Package")}: ${item.packageRelativePath}`, width, "…")]

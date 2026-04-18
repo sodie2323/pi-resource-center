@@ -45,6 +45,7 @@ export interface FileResourceItem {
 	source: string;
 	sourceLabel?: string;
 	description: string;
+	argumentHint?: string;
 	enabled: boolean;
 	managedByPluginSettings?: boolean;
 	externalSourceId?: string;

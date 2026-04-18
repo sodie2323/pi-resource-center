@@ -44,6 +44,7 @@ type DiscoveryCaches = {
 	mtimeByPath: Map<string, number | undefined>;
 	packageDescriptionByPath: Map<string, string | undefined>;
 	skillDescriptionByPath: Map<string, string | undefined>;
+	promptMetadataByPath: Map<string, { description?: string; argumentHint?: string }>;
 };
 
 export async function discoverResources(cwd: string): Promise<ResourceIndex> {
@@ -51,6 +52,7 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 		mtimeByPath: new Map(),
 		packageDescriptionByPath: new Map(),
 		skillDescriptionByPath: new Map(),
+		promptMetadataByPath: new Map(),
 	};
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
@@ -190,6 +192,7 @@ async function createFileItem(
 
 	const packageSource = resource.metadata.origin === "package" ? resource.metadata.source : undefined;
 	const packageRelativePath = getRelativeResourcePath(resource);
+	const promptMetadata = category === "prompts" ? await readPromptMetadata(resource.path, caches) : undefined;
 	return {
 		category,
 		id: `${category}:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
@@ -199,7 +202,10 @@ async function createFileItem(
 		source: normalizeSource(resource.metadata),
 		description: category === "skills"
 			? await readSkillDescription(resource.path, caches) ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
-			: buildResourceDescription(category, scope, resource.metadata, resource.path),
+			: category === "prompts"
+				? promptMetadata?.description ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
+				: buildResourceDescription(category, scope, resource.metadata, resource.path),
+		argumentHint: category === "prompts" ? promptMetadata?.argumentHint : undefined,
 		enabled: resource.enabled,
 		updatedAt: await safeMtimeMs(resource.path, caches),
 		packageSource,
@@ -442,6 +448,27 @@ async function readSkillDescription(path: string, caches: DiscoveryCaches): Prom
 		return description;
 	} catch {
 		caches.skillDescriptionByPath.set(path, undefined);
+		return undefined;
+	}
+}
+
+async function readPromptMetadata(path: string, caches: DiscoveryCaches): Promise<{ description?: string; argumentHint?: string } | undefined> {
+	if (caches.promptMetadataByPath.has(path)) {
+		return caches.promptMetadataByPath.get(path);
+	}
+	try {
+		const raw = await readFile(path, "utf8");
+		const { frontmatter } = parseFrontmatter<{ description?: string; "argument-hint"?: string }>(raw);
+		const metadata = {
+			description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description.trim() : undefined,
+			argumentHint: typeof frontmatter["argument-hint"] === "string" && frontmatter["argument-hint"].trim()
+				? frontmatter["argument-hint"].trim()
+				: undefined,
+		};
+		caches.promptMetadataByPath.set(path, metadata);
+		return metadata;
+	} catch {
+		caches.promptMetadataByPath.set(path, {});
 		return undefined;
 	}
 }
