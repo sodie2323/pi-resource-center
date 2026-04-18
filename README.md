@@ -1,7 +1,7 @@
 # pi-resource-center
 
 [![npm version](https://img.shields.io/npm/v/pi-resource-center.svg)](https://www.npmjs.com/package/pi-resource-center)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
+[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-center)
 
@@ -60,6 +60,9 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - Update remote packages directly from the browser
 - Argument completions for `/resource` subcommands
 - Built-in settings UI (`Shift+S`) with persistent preferences
+- External skill source management for Claude, Codex, OpenCode, and multiple custom directories
+- Inline integrations editing with keyboard shortcuts for add/remove and quick on/off toggling
+- Prompt detail views surface frontmatter metadata such as `argument-hint`
 
 ## Quick start
 
@@ -248,11 +251,14 @@ For package-contained extensions, skills, and prompts, the detail view also incl
 
 Open from anywhere in the Resource Center TUI via `Shift+S`.
 
-- `Left/Right` or `Tab` — switch settings tabs (`All`, `Display`, `Packages`, `Search`)
+- `Left/Right` or `Tab` — switch settings tabs (`All`, `Display`, `Packages`, `Search`, `Integrations`)
 - Type to filter settings (search matches setting labels and descriptions)
 - `Up/Down` — move selection
-- `Enter` or `Space` — change the selected setting
-- `Esc` — close settings
+- `Enter` — change the selected setting or edit an integration path inline
+- `Space` — toggle the selected integration on/off
+- `A` — add a custom external skill source in the `Integrations` tab
+- `R` — remove the selected custom external skill source in the `Integrations` tab
+- `Esc` — close settings or cancel inline editing
 
 ## Plugin settings
 
@@ -261,7 +267,7 @@ Resource Center stores its own UI preferences and "exposed" package resource sta
 - Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
 - macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
 
-This file stores the Resource Center's own UI preferences together with pinned resources and exposed package-resource state.
+This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, and configured external skill sources.
 
 Stale `pinned` and `exposedResources` entries are pruned automatically when the plugin refreshes and before settings are saved.
 
@@ -288,6 +294,7 @@ The package discovers resources in both **project** and **user** scope.
   - `skills/`
   - `prompts/`
   - `themes/`
+- external skill source directories configured in Resource Center settings (Claude/Codex/OpenCode/custom)
 
 ### Package sources
 
@@ -301,6 +308,8 @@ Configured package sources are read from Pi settings. For local package sources,
 By default, `extensions`, `skills`, and `prompts` focus on top-level resources. Package-contained resources for those categories are managed from the package detail view instead.
 
 From a package-contained extension, skill, or prompt detail view, you can explicitly show or hide that resource in its top-level category. Exposed package resources keep a package marker so their origin stays visible.
+
+Enabled external skill sources are synchronized into Pi core `settings.json` `skills` entries so Pi handles directory discovery and per-skill disable rules consistently.
 
 Themes are the exception: package-provided themes are still surfaced in the `themes` category by default so they remain easy to discover and apply.
 

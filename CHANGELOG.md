@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-04-18
+
+### Added
+- Added first-class external skill source management for built-in Claude, Codex, and OpenCode directories plus multiple custom external skill source directories.
+- Added inline editing for external skill source paths directly in the integrations settings list.
+- Added keyboard shortcuts for integrations management: `A` to add custom external skill sources and `R` to remove the currently selected custom source.
+- Added prompt `argument-hint` metadata display in prompt detail views.
+- Prompt and skill resources now prefer real frontmatter descriptions when available.
+
+### Changed
+- External skill sources now sync into Pi core `settings.json` so directory-level enablement and per-skill disable entries work correctly together.
+- Integrations settings now merge each source's on/off state and path into a single row with inline editing.
+- Simplified integrations hints and removed extra add/remove rows from the UI.
+
+### Fixed
+- Resource browser selection now wraps around at the top and bottom.
+- Inline settings editing no longer steals left/right cursor movement for settings section switching.
+- Toggling an external skill source no longer jumps focus back to the first row.
+- Skill resources no longer fall back to generic path-only descriptions when `SKILL.md` provides a real description.
+
 ## [0.2.0] - 2026-04-12
 
 ### Added
