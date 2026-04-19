@@ -15,6 +15,7 @@ import {
 	getToggleErrorMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
+import { reloadAfterSettingsChange } from "./commands.js";
 import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
@@ -45,17 +46,11 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 		const closeBrowser = async () => {
 			stopUpdateSpinner();
-			if (!hasPendingChanges) {
-				done(undefined);
-				return;
-			}
-			const reloadNow = await ctx.ui.confirm("Settings updated", "Resource settings changed. Reload now to apply changes?");
 			done(undefined);
-			if (reloadNow) {
-				await ctx.reload();
+			if (!hasPendingChanges) {
 				return;
 			}
-			ctx.ui.notify("Settings saved. Run /reload when you're ready.", "info");
+			await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 		};
 		const startUpdateSpinner = (source: string) => {
 			stopUpdateSpinner();

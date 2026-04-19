@@ -40,10 +40,21 @@ export const SORT_MODE_LABELS: Record<ResourceCenterSettings["sortMode"], string
 };
 
 export const SORT_MODE_VALUES = Object.values(SORT_MODE_LABELS);
+export const RELOAD_BEHAVIOR_LABELS: Record<ResourceCenterSettings["reloadBehavior"], string> = {
+	notice: "Only show /reload hint",
+	prompt: "Ask before reload",
+	auto: "Reload automatically",
+};
+export const RELOAD_BEHAVIOR_VALUES = Object.values(RELOAD_BEHAVIOR_LABELS);
 
 export function sortModeFromLabel(label: string): ResourceCenterSettings["sortMode"] {
 	const entry = (Object.entries(SORT_MODE_LABELS) as Array<[ResourceCenterSettings["sortMode"], string]>).find(([, value]) => value === label);
 	return entry?.[0] ?? "updated";
+}
+
+export function reloadBehaviorFromLabel(label: string): ResourceCenterSettings["reloadBehavior"] {
+	const entry = (Object.entries(RELOAD_BEHAVIOR_LABELS) as Array<[ResourceCenterSettings["reloadBehavior"], string]>).find(([, value]) => value === label);
+	return entry?.[0] ?? "notice";
 }
 
 export function formatPackageLabel(source: string): string {

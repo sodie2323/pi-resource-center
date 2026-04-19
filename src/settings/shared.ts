@@ -46,12 +46,14 @@ export interface ExposedResourceEntry {
 }
 
 export type ResourceSortMode = "updated" | "default" | "name" | "enabled" | "scope";
+export type ReloadBehavior = "notice" | "prompt" | "auto";
 
 export interface ResourceCenterSettings {
 	showSource: boolean;
 	showPath: boolean;
 	showPathInPackage: boolean;
 	sortMode: ResourceSortMode;
+	reloadBehavior: ReloadBehavior;
 	pinned: string[];
 	packagePreviewLimit: 3 | 5 | 8;
 	searchIncludeDescription: boolean;
@@ -74,6 +76,7 @@ export const DEFAULT_RESOURCE_CENTER_SETTINGS: ResourceCenterSettings = {
 	showPath: true,
 	showPathInPackage: true,
 	sortMode: "updated",
+	reloadBehavior: "notice",
 	pinned: [],
 	packagePreviewLimit: 5,
 	searchIncludeDescription: true,

@@ -19,9 +19,12 @@ import {
 	CATEGORY_LABELS,
 	CATEGORY_ORDER,
 	PACKAGE_CONTENT_CATEGORIES,
+	RELOAD_BEHAVIOR_LABELS,
+	RELOAD_BEHAVIOR_VALUES,
 	SETTINGS_SECTION_ORDER,
 	SORT_MODE_LABELS,
 	SORT_MODE_VALUES,
+	reloadBehaviorFromLabel,
 	sortModeFromLabel,
 	type BrowserCallbacks,
 	type BrowserMode,
@@ -1081,6 +1084,13 @@ export class ResourceBrowser implements Component, Focusable {
 	private buildSettingsItems(section: SettingsSection): SettingItem[] {
 		const display: SettingItem[] = [
 			{
+				id: "reloadBehavior",
+				label: "Reload behavior",
+				description: "Choose what happens after resource settings change: only show a /reload hint, ask first, or reload immediately.",
+				currentValue: RELOAD_BEHAVIOR_LABELS[this.settings.reloadBehavior],
+				values: RELOAD_BEHAVIOR_VALUES,
+			},
+			{
 				id: "showSource",
 				label: "Show source",
 				description: "Show source values in detail pages.",
@@ -1173,6 +1183,9 @@ export class ResourceBrowser implements Component, Focusable {
 	private applySettingsChange(id: string, newValue: string): void {
 		const next = { ...this.settings, externalSkillSources: [...this.settings.externalSkillSources] };
 		switch (id) {
+			case "reloadBehavior":
+				next.reloadBehavior = reloadBehaviorFromLabel(newValue);
+				break;
 			case "showSource":
 				next.showSource = newValue === "true";
 				break;

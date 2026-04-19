@@ -12,8 +12,9 @@ import {
 	getRemoveSuccessMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
-import { addPackageToSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import { addPackageToSettings, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import { normalizeCategoryAlias } from "./completions.js";
+import type { ReloadBehavior } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
 export async function handleAddCommand(
@@ -159,7 +160,19 @@ export async function handleExposureCommand(
 	ctx.ui.notify(getExposeSuccessMessage(item, exposed, statePath), "info");
 }
 
-export async function reloadAfterSettingsChange(ctx: ExtensionCommandContext, message: string): Promise<void> {
+export async function reloadAfterSettingsChange(ctx: ExtensionCommandContext, message: string, reloadBehavior?: ReloadBehavior): Promise<void> {
+	const behavior = reloadBehavior ?? (await readResourceCenterSettings()).reloadBehavior;
+	if (behavior === "notice") {
+		ctx.ui.notify(`${message}. Run /reload to apply changes.`, "info");
+		return;
+	}
+	if (behavior === "prompt") {
+		const reloadNow = await ctx.ui.confirm("Settings updated", `${message}. Reload now to apply changes?`);
+		if (!reloadNow) {
+			ctx.ui.notify(`${message}. Run /reload when you're ready.`, "info");
+			return;
+		}
+	}
 	try {
 		await ctx.reload();
 		return;

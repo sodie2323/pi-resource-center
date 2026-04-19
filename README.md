@@ -256,6 +256,7 @@ Open from anywhere in the Resource Center TUI via `Shift+S`.
 - `Up/Down` — move selection
 - `Enter` — change the selected setting or edit an integration path inline
 - `Space` — toggle the selected integration on/off
+- `Reload behavior` setting supports three modes: `Only show /reload hint`, `Ask before reload`, and `Reload automatically`
 - `A` — add a custom external skill source in the `Integrations` tab
 - `R` — remove the selected custom external skill source in the `Integrations` tab
 - `Esc` — close settings or cancel inline editing
@@ -267,7 +268,7 @@ Resource Center stores its own UI preferences and "exposed" package resource sta
 - Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
 - macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
 
-This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, and configured external skill sources.
+This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, configured external skill sources, and the reload behavior used after settings changes.
 
 Stale `pinned` and `exposedResources` entries are pruned automatically when the plugin refreshes and before settings are saved.
 
