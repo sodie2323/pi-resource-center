@@ -29,39 +29,21 @@ export async function detectAddTarget(
 	cwd: string,
 	options: { preferredCategory?: AddPathCategory } = {},
 ): Promise<AddTarget> {
-	const trimmed = input.trim();
-	if (!trimmed) return { kind: "invalid", reason: "Enter a package source or local path." };
-	if (isRemotePackageSource(trimmed)) {
-		if (options.preferredCategory) {
-			return { kind: "invalid", reason: `Remote source ${trimmed} can only be added as a package.` };
-		}
-		return { kind: "package", source: trimmed, description: "Remote package source" };
-	}
+	const prepared = prepareAddInput(input, cwd, options);
+	if (prepared.kind !== "path") return prepared.result;
 
-	const resolvedPath = resolveLocalInput(trimmed, cwd);
 	let pathStat;
 	try {
-		pathStat = await stat(resolvedPath);
+		pathStat = await stat(prepared.resolvedPath);
 	} catch {
-		return { kind: "invalid", reason: `Path does not exist: ${trimmed}` };
+		return { kind: "invalid", reason: `Path does not exist: ${prepared.trimmed}` };
 	}
 
-	if (options.preferredCategory) {
-		return {
-			kind: "path",
-			category: options.preferredCategory,
-			path: resolvedPath,
-			description: `Local ${CATEGORY_LABELS[options.preferredCategory]} ${pathStat.isDirectory() ? "directory" : "file"}`,
-		};
-	}
-
-	if (pathStat.isFile()) {
-		return detectFileTarget(resolvedPath);
-	}
-	if (pathStat.isDirectory()) {
-		return await detectDirectoryTarget(resolvedPath);
-	}
-	return { kind: "invalid", reason: `Unsupported path type: ${trimmed}` };
+	const preferredTarget = buildPreferredCategoryTarget(prepared.resolvedPath, options.preferredCategory, pathStat.isDirectory());
+	if (preferredTarget) return preferredTarget;
+	if (pathStat.isFile()) return detectFileTarget(prepared.resolvedPath);
+	if (pathStat.isDirectory()) return await detectDirectoryTarget(prepared.resolvedPath);
+	return { kind: "invalid", reason: `Unsupported path type: ${prepared.trimmed}` };
 }
 
 export function detectAddTargetSync(
@@ -69,34 +51,21 @@ export function detectAddTargetSync(
 	cwd: string,
 	options: { preferredCategory?: AddPathCategory } = {},
 ): AddTarget {
-	const trimmed = input.trim();
-	if (!trimmed) return { kind: "invalid", reason: "Enter a package source or local path." };
-	if (isRemotePackageSource(trimmed)) {
-		if (options.preferredCategory) {
-			return { kind: "invalid", reason: `Remote source ${trimmed} can only be added as a package.` };
-		}
-		return { kind: "package", source: trimmed, description: "Remote package source" };
-	}
+	const prepared = prepareAddInput(input, cwd, options);
+	if (prepared.kind !== "path") return prepared.result;
 
-	const resolvedPath = resolveLocalInput(trimmed, cwd);
 	let pathStat;
 	try {
-		pathStat = statSync(resolvedPath);
+		pathStat = statSync(prepared.resolvedPath);
 	} catch {
-		return { kind: "invalid", reason: `Path does not exist: ${trimmed}` };
+		return { kind: "invalid", reason: `Path does not exist: ${prepared.trimmed}` };
 	}
 
-	if (options.preferredCategory) {
-		return {
-			kind: "path",
-			category: options.preferredCategory,
-			path: resolvedPath,
-			description: `Local ${CATEGORY_LABELS[options.preferredCategory]} ${pathStat.isDirectory() ? "directory" : "file"}`,
-		};
-	}
-	if (pathStat.isFile()) return detectFileTarget(resolvedPath);
-	if (pathStat.isDirectory()) return detectDirectoryTargetSync(resolvedPath);
-	return { kind: "invalid", reason: `Unsupported path type: ${trimmed}` };
+	const preferredTarget = buildPreferredCategoryTarget(prepared.resolvedPath, options.preferredCategory, pathStat.isDirectory());
+	if (preferredTarget) return preferredTarget;
+	if (pathStat.isFile()) return detectFileTarget(prepared.resolvedPath);
+	if (pathStat.isDirectory()) return detectDirectoryTargetSync(prepared.resolvedPath);
+	return { kind: "invalid", reason: `Unsupported path type: ${prepared.trimmed}` };
 }
 
 export function getAddTargetSuccessLabel(target: Extract<AddTarget, { kind: "package" | "path" }>): string {
@@ -113,6 +82,34 @@ function resolveLocalInput(value: string, cwd: string): string {
 	return resolve(cwd, value);
 }
 
+function prepareAddInput(
+	input: string,
+	cwd: string,
+	options: { preferredCategory?: AddPathCategory },
+):
+	| { kind: "result"; result: AddTarget }
+	| { kind: "path"; trimmed: string; resolvedPath: string } {
+	const trimmed = input.trim();
+	if (!trimmed) return { kind: "result", result: { kind: "invalid", reason: "Enter a package source or local path." } };
+	if (isRemotePackageSource(trimmed)) {
+		if (options.preferredCategory) {
+			return { kind: "result", result: { kind: "invalid", reason: `Remote source ${trimmed} can only be added as a package.` } };
+		}
+		return { kind: "result", result: { kind: "package", source: trimmed, description: "Remote package source" } };
+	}
+	return { kind: "path", trimmed, resolvedPath: resolveLocalInput(trimmed, cwd) };
+}
+
+function buildPreferredCategoryTarget(path: string, category: AddPathCategory | undefined, isDirectory: boolean): AddTarget | undefined {
+	if (!category) return undefined;
+	return {
+		kind: "path",
+		category,
+		path,
+		description: `Local ${CATEGORY_LABELS[category]} ${isDirectory ? "directory" : "file"}`,
+	};
+}
+
 function detectFileTarget(path: string): AddTarget {
 	const fileName = basename(path);
 	const extension = extname(path).toLowerCase();
@@ -124,107 +121,91 @@ function detectFileTarget(path: string): AddTarget {
 }
 
 async function detectDirectoryTarget(path: string): Promise<AddTarget> {
-	if (await isLikelyPackageDirectory(path)) {
-		return { kind: "package", source: path, description: "Local package directory" };
-	}
-
-	const candidates = await detectDirectoryCandidates(path);
-	if (candidates.length === 1) {
-		return {
-			kind: "path",
-			category: candidates[0]!,
-			path,
-			description: `Local ${CATEGORY_LABELS[candidates[0]!]} directory`,
-		};
-	}
-	if (candidates.length > 1) {
-		return {
-			kind: "ambiguous",
-			path,
-			candidates,
-			description: `Directory could be added as: ${candidates.map((candidate) => CATEGORY_LABELS[candidate]).join(", ")}`,
-		};
-	}
-	return { kind: "invalid", reason: `Couldn't infer resource type from directory: ${path}` };
+	if (await isLikelyPackageDirectory(path)) return buildPackageDirectoryTarget(path);
+	return buildDirectoryTarget(path, await detectDirectoryCandidates(path));
 }
 
 function detectDirectoryTargetSync(path: string): AddTarget {
-	if (isLikelyPackageDirectorySync(path)) {
-		return { kind: "package", source: path, description: "Local package directory" };
-	}
-	const candidates = detectDirectoryCandidatesSync(path);
-	if (candidates.length === 1) {
-		return {
-			kind: "path",
-			category: candidates[0]!,
-			path,
-			description: `Local ${CATEGORY_LABELS[candidates[0]!]} directory`,
-		};
-	}
-	if (candidates.length > 1) {
-		return {
-			kind: "ambiguous",
-			path,
-			candidates,
-			description: `Directory could be added as: ${candidates.map((candidate) => CATEGORY_LABELS[candidate]).join(", ")}`,
-		};
-	}
-	return { kind: "invalid", reason: `Couldn't infer resource type from directory: ${path}` };
+	if (isLikelyPackageDirectorySync(path)) return buildPackageDirectoryTarget(path);
+	return buildDirectoryTarget(path, detectDirectoryCandidatesSync(path));
 }
 
 async function isLikelyPackageDirectory(path: string): Promise<boolean> {
-	if (await pathExists(resolve(path, "package.json"))) {
-		const manifest = await readPackageManifest(resolve(path, "package.json"));
-		if (manifest?.pi && typeof manifest.pi === "object") return true;
-		if (Array.isArray(manifest?.keywords) && manifest.keywords.includes("pi-package")) return true;
-		return true;
-	}
-	for (const dirName of CONVENTIONAL_PACKAGE_DIRS) {
-		if (await pathExists(resolve(path, dirName))) return true;
-	}
-	return false;
+	const manifestPath = resolve(path, "package.json");
+	if (await pathExists(manifestPath)) return isLikelyPackageManifest(await readPackageManifest(manifestPath));
+	return hasConventionalPackageDirs(path, (dirPath) => pathExists(dirPath));
 }
 
 function isLikelyPackageDirectorySync(path: string): boolean {
+	const manifestPath = resolve(path, "package.json");
 	try {
-		const manifestPath = resolve(path, "package.json");
 		statSync(manifestPath);
-		const manifest = readPackageManifestSync(manifestPath);
-		if (manifest?.pi && typeof manifest.pi === "object") return true;
-		if (Array.isArray(manifest?.keywords) && manifest.keywords.includes("pi-package")) return true;
-		return true;
+		return isLikelyPackageManifest(readPackageManifestSync(manifestPath));
 	} catch {
-		for (const dirName of CONVENTIONAL_PACKAGE_DIRS) {
+		return hasConventionalPackageDirsSync(path, (dirPath) => {
 			try {
-				if (statSync(resolve(path, dirName)).isDirectory()) return true;
-			} catch {}
-		}
-		return false;
+				return statSync(dirPath).isDirectory();
+			} catch {
+				return false;
+			}
+		});
 	}
 }
 
 async function detectDirectoryCandidates(path: string): Promise<AddPathCategory[]> {
-	const entries = await readdir(path, { withFileTypes: true });
-	const candidates = new Set<AddPathCategory>();
-	for (const entry of entries) {
-		if (entry.name === "SKILL.md") candidates.add("skills");
-		const lower = entry.name.toLowerCase();
-		const extension = extname(lower);
-		if (entry.isDirectory()) {
-			if (["skills", "prompts", "extensions", "themes"].includes(lower)) {
-				candidates.add(lower as AddPathCategory);
-			}
-			continue;
-		}
-		if ([".ts", ".js", ".mjs", ".cjs"].includes(extension)) candidates.add("extensions");
-		if (extension === ".md") candidates.add(lower === "skill.md" ? "skills" : "prompts");
-		if (extension === ".json") candidates.add("themes");
-	}
-	return [...candidates];
+	return collectDirectoryCandidates(await readdir(path, { withFileTypes: true }));
 }
 
 function detectDirectoryCandidatesSync(path: string): AddPathCategory[] {
-	const entries = readdirSync(path, { withFileTypes: true });
+	return collectDirectoryCandidates(readdirSync(path, { withFileTypes: true }));
+}
+
+function buildPackageDirectoryTarget(path: string): AddTarget {
+	return { kind: "package", source: path, description: "Local package directory" };
+}
+
+function buildDirectoryTarget(path: string, candidates: AddPathCategory[]): AddTarget {
+	if (candidates.length === 1) {
+		return {
+			kind: "path",
+			category: candidates[0]!,
+			path,
+			description: `Local ${CATEGORY_LABELS[candidates[0]!]} directory`,
+		};
+	}
+	if (candidates.length > 1) {
+		return {
+			kind: "ambiguous",
+			path,
+			candidates,
+			description: `Directory could be added as: ${candidates.map((candidate) => CATEGORY_LABELS[candidate]).join(", ")}`,
+		};
+	}
+	return { kind: "invalid", reason: `Couldn't infer resource type from directory: ${path}` };
+}
+
+function isLikelyPackageManifest(manifest: { pi?: unknown; keywords?: string[] } | undefined): boolean {
+	if (!manifest) return true;
+	if (manifest.pi && typeof manifest.pi === "object") return true;
+	if (Array.isArray(manifest.keywords) && manifest.keywords.includes("pi-package")) return true;
+	return true;
+}
+
+async function hasConventionalPackageDirs(path: string, exists: (path: string) => Promise<boolean>): Promise<boolean> {
+	for (const dirName of CONVENTIONAL_PACKAGE_DIRS) {
+		if (await exists(resolve(path, dirName))) return true;
+	}
+	return false;
+}
+
+function hasConventionalPackageDirsSync(path: string, exists: (path: string) => boolean): boolean {
+	for (const dirName of CONVENTIONAL_PACKAGE_DIRS) {
+		if (exists(resolve(path, dirName))) return true;
+	}
+	return false;
+}
+
+function collectDirectoryCandidates(entries: Array<{ name: string; isDirectory(): boolean }>): AddPathCategory[] {
 	const candidates = new Set<AddPathCategory>();
 	for (const entry of entries) {
 		if (entry.name === "SKILL.md") candidates.add("skills");
