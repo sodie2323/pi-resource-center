@@ -3,6 +3,7 @@
  */
 import { basename } from "node:path";
 import type { Theme } from "@mariozechner/pi-coding-agent";
+import type { AddPathCategory } from "../resource/add-detect.js";
 import type { ResourceCenterSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
@@ -16,7 +17,7 @@ export const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	themes: "Themes",
 };
 
-export type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems" | "settings";
+export type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems" | "settings" | "add";
 export type DetailAction = "manage" | "toggle" | "pin" | "expose" | "update" | "remove" | "back";
 export type PackageContentCategory = Exclude<ResourceCategory, "packages">;
 export const PACKAGE_CONTENT_CATEGORIES: PackageContentCategory[] = ["extensions", "skills", "prompts", "themes"];
@@ -69,6 +70,12 @@ export type PackageGroupEntry =
 	| { kind: "item"; category: PackageContentCategory; item: ResourceItem }
 	| { kind: "more"; category: PackageContentCategory; remaining: number };
 
+export interface AddResourceRequest {
+	input: string;
+	scope: "project" | "user";
+	preferredCategory?: AddPathCategory;
+}
+
 export interface BrowserCallbacks {
 	onClose: () => void | Promise<void>;
 	onInspect?: (item: ResourceItem) => void;
@@ -76,7 +83,9 @@ export interface BrowserCallbacks {
 	onExpose?: (item: ResourceItem) => void;
 	onUpdate?: (item: ResourceItem) => void;
 	onRemove?: (item: ResourceItem) => void;
+	onAdd?: (request: AddResourceRequest) => void | Promise<void>;
 	onSettingsChange?: (settings: ResourceCenterSettings) => void | Promise<void>;
+	onRequestRender?: () => void;
 }
 
 export type ActionMessage = { action: DetailAction; type: "info" | "warning" | "error"; text: string };

@@ -21,6 +21,7 @@ export function getHeaderTitle(args: {
 	const { mode, category, detailItem, packageItem, packageContentsCategory } = args;
 	if (mode === "detail" && detailItem) return getDetailTitle(detailItem);
 	if (mode === "settings") return "Resources / Settings";
+	if (mode === "add") return "Resources / Add";
 	if (mode === "packageGroups" && packageItem && isPackageItem(packageItem)) {
 		return `Packages / ${formatPackageLabel(packageItem.source)} / Contents`;
 	}
@@ -36,23 +37,27 @@ export function getDetailTitle(item: ResourceItem): string {
 	return `Resources / ${CATEGORY_LABELS[item.category]} / ${item.name}`;
 }
 
-export function getListFooterText(selectedCategory: ResourceCategory): string {
-	return selectedCategory === "packages"
-		? "Tab switch · ↑↓ move · Space enable/disable all contents · P pin/unpin · Enter details · Esc close"
-		: "Tab switch · ↑↓ move · Space toggle · P pin/unpin · Enter details · Esc close";
+export function getListFooterText(_selectedCategory: ResourceCategory): string {
+	return "↑↓ move · Space toggle · A add · P pin/unpin · Enter details · Esc close";
 }
 
 export function getDetailFooterText(): string {
-	return "↑↓ move · Enter confirm · P pin/unpin · Esc back";
+	return "↑↓ move · Enter confirm · A add · P pin/unpin · Esc back";
+}
+
+export function getAddFooterText(loading = false): string {
+	return loading
+		? "Adding… · Esc disabled · S Settings disabled"
+		: "Enter accept/add · Tab switch scope · ↑↓ choose suggestion/type · Esc back";
 }
 
 export function getPackageFooterText(mode: BrowserMode, selectedEntry?: PackageGroupEntry): string {
 	if (mode === "packageGroups") {
 		return selectedEntry?.kind === "item"
-			? "Type to search · ↑↓ move · Space toggle · P pin/unpin · Enter details · Esc back"
-			: "Type to search · ↑↓ move · Enter open full list · Esc back";
+			? "Type to search · ↑↓ move · Space toggle · A add · P pin/unpin · Enter details · Esc back"
+			: "Type to search · ↑↓ move · A add · Enter open full list · Esc back";
 	}
-	return "Type to search · ↑↓ move · Enter details · Space toggle · P pin/unpin · Esc back";
+	return "Type to search · ↑↓ move · Enter details · Space toggle · A add · P pin/unpin · Esc back";
 }
 
 export function getEmptyPackageCategoryMessage(category: PackageContentCategory, hasSearchQuery: boolean): string {

@@ -15,9 +15,26 @@ import {
 	getToggleErrorMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
-import { reloadAfterSettingsChange } from "./commands.js";
+import { addResourceFromInput, reloadAfterSettingsChange } from "./commands.js";
+import { detectAddTarget } from "./add-detect.js";
 import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
+
+function buildSuccessOperationMessage(verb: "Updated package" | "Added package", source: string, output: string): string {
+	const summary = summarizeCliOutput(output);
+	return summary ? `${verb} ${source} · ${summary}` : `${verb} ${source}`;
+}
+
+function summarizeCliOutput(output: string): string | undefined {
+	const normalized = output
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.filter((line) => !/^(updating|adding)\s+/i.test(line));
+	if (normalized.length === 0) return undefined;
+	const preferred = normalized.find((line) => /(added|removed|changed|up to date|audited|installed)/i.test(line)) ?? normalized[normalized.length - 1];
+	return preferred.replace(/\s+/g, " ").trim();
+}
 
 export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const resources = await discoverResources(ctx.cwd);
@@ -26,19 +43,33 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 	let hasPendingChanges = false;
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-		let updateSpinner: ReturnType<typeof setInterval> | undefined;
+		let loadingSpinner: ReturnType<typeof setInterval> | undefined;
 		let browser!: ResourceBrowser;
 		const requestRender = () => tui.requestRender();
 		const refreshBrowser = async () => {
 			browser.setResources(await discoverResources(ctx.cwd));
 			requestRender();
 		};
+		const startLoadingSpinner = () => {
+			if (loadingSpinner) return;
+			loadingSpinner = setInterval(() => {
+				if (!browser.hasLoadingState()) {
+					if (loadingSpinner) {
+						clearInterval(loadingSpinner);
+						loadingSpinner = undefined;
+					}
+					return;
+				}
+				browser.advanceLoadingFrame();
+				requestRender();
+			}, 100);
+		};
 		const stopUpdateSpinner = () => {
-			if (updateSpinner) {
-				clearInterval(updateSpinner);
-				updateSpinner = undefined;
-			}
 			browser.stopActionLoading("update");
+			if (!browser.hasLoadingState() && loadingSpinner) {
+				clearInterval(loadingSpinner);
+				loadingSpinner = undefined;
+			}
 		};
 		const setActionMessage = (action: "toggle" | "expose" | "update" | "remove", type: "info" | "warning" | "error", text: string) => {
 			browser.setActionMessage(action, type, text);
@@ -46,6 +77,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 		const closeBrowser = async () => {
 			stopUpdateSpinner();
+			if (loadingSpinner) {
+				clearInterval(loadingSpinner);
+				loadingSpinner = undefined;
+			}
 			done(undefined);
 			if (!hasPendingChanges) {
 				return;
@@ -56,10 +91,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			stopUpdateSpinner();
 			browser.startActionLoading("update", `Updating ${source}`);
 			requestRender();
-			updateSpinner = setInterval(() => {
-				browser.advanceLoadingFrame();
-				requestRender();
-			}, 100);
+			startLoadingSpinner();
 		};
 		const updatePackage = async (item: ResourceItem) => {
 			if (!isPackageItem(item)) {
@@ -83,14 +115,22 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				if (result.code === 0) {
 					hasPendingChanges = true;
 					await refreshBrowser();
-					setActionMessage("update", "info", output || `Updated package ${item.source}`);
+					const message = buildSuccessOperationMessage("Updated package", item.source, output);
+					browser.setGlobalStatus("info", undefined);
+					setActionMessage("update", "info", message);
+					ctx.ui.notify(message, "info");
 				} else {
-					setActionMessage("update", "error", output || `Failed to update package ${item.source}`);
+					const message = output || `Failed to update package ${item.source}`;
+					browser.setGlobalStatus("error", undefined);
+					setActionMessage("update", "error", message);
+					ctx.ui.notify(message, "warning");
 				}
 			} catch (error: unknown) {
 				stopUpdateSpinner();
 				const message = error instanceof Error ? error.message : String(error);
+				browser.setGlobalStatus("error", undefined);
 				setActionMessage("update", "error", `Failed to update package: ${message}`);
+				ctx.ui.notify(`Failed to update package: ${message}`, "warning");
 			}
 		};
 		const toggleItem = async (item: ResourceItem) => {
@@ -143,6 +183,38 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				setActionMessage("remove", "error", getRemoveErrorMessage(item, error));
 			}
 		};
+		const addResource = async (request: { input: string; scope: "project" | "user"; preferredCategory?: import("./add-detect.js").AddPathCategory }) => {
+			startLoadingSpinner();
+			try {
+				const target = await detectAddTarget(request.input, ctx.cwd, { preferredCategory: request.preferredCategory });
+				if (target.kind === "invalid") throw new Error(target.reason);
+				if (target.kind === "ambiguous") {
+					throw new Error(`Couldn't infer resource type for ${target.path}. Choose one of: ${target.candidates.join(", ")}`);
+				}
+				let message: string;
+				if (target.kind === "package") {
+					const cliEntry = process.argv[1];
+					if (!cliEntry) throw new Error("Couldn't determine the pi CLI entrypoint");
+					const installArgs = [cliEntry, "install", target.source, ...(request.scope === "project" ? ["-l"] : [])];
+					const result = await pi.exec(process.execPath, installArgs, { signal: ctx.signal });
+					const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+					if (result.code !== 0) throw new Error(output || `Failed to install package ${target.source}`);
+					message = buildSuccessOperationMessage("Added package", target.source, output);
+				} else {
+					message = await addResourceFromInput(ctx.cwd, request.input, request.scope, request.preferredCategory);
+				}
+				hasPendingChanges = true;
+				await refreshBrowser();
+				browser.setGlobalStatus("info", undefined);
+				ctx.ui.notify(message, "info");
+				return message;
+			} catch (error: unknown) {
+				const message = error instanceof Error ? error.message : String(error);
+				browser.setGlobalStatus("error", undefined);
+				ctx.ui.notify(message, "warning");
+				throw error;
+			}
+		};
 
 		browser = new ResourceBrowser(theme, resources, category, resourceCenterSettings, {
 			onClose: closeBrowser,
@@ -151,6 +223,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			onExpose: (item) => void exposeItem(item),
 			onUpdate: (item) => void updatePackage(item),
 			onRemove: (item) => void removeItem(item),
+			onAdd: (request) => addResource(request),
 			onSettingsChange: (settings) => {
 				const previousExternalSources = JSON.stringify(currentResourceCenterSettings.externalSkillSources);
 				const nextExternalSources = JSON.stringify(settings.externalSkillSources);
@@ -168,7 +241,8 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 						ctx.ui.notify(`Failed to save resource center settings: ${message}`, "error");
 					});
 			},
-		});
+			onRequestRender: requestRender,
+		}, ctx.cwd);
 		return {
 			render: (width) => browser.render(width),
 			invalidate: () => browser.invalidate(),

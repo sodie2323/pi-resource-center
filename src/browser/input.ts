@@ -19,6 +19,7 @@ export function handleListInput(data: string, args: {
 	onOpenSelectedItem: () => void;
 	onTogglePinned: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
+	onAddResource?: () => void;
 	searchInput: Input;
 	onApplyFilter: () => void;
 }): void {
@@ -36,6 +37,7 @@ export function handleListInput(data: string, args: {
 		if (args.selectedItem) args.onTogglePinned(args.selectedItem);
 		return;
 	}
+	if (data === "A") return void args.onAddResource?.();
 	if (data === " ") {
 		if (args.selectedItem) args.onToggleItem(args.selectedItem);
 		return;
@@ -60,6 +62,7 @@ export function handleDetailInput(data: string, args: {
 	onToggleExpose: (item: ResourceItem) => void;
 	onUpdateItem: (item: ResourceItem) => void;
 	onRemoveItem: (item: ResourceItem) => void;
+	onAddResource?: () => void;
 }): void {
 	const kb = getKeybindings();
 	if (data === "S") return args.onOpenSettings();
@@ -67,6 +70,7 @@ export function handleDetailInput(data: string, args: {
 		if (args.detailItem) args.onTogglePinned(args.detailItem);
 		return;
 	}
+	if (data === "A") return void args.onAddResource?.();
 	if (kb.matches(data, "tui.select.cancel")) {
 		if (args.confirmingRemove) {
 			args.setConfirmingRemove(false);
@@ -136,6 +140,7 @@ export function handlePackageGroupsInput(data: string, args: {
 	onRefreshPackageContents: () => void;
 	onTogglePinned: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
+	onAddResource?: () => void;
 	searchInput: Input;
 	getSearchQuery: () => string;
 	onInvalidatePackageViewCaches: (packageId?: string) => void;
@@ -149,6 +154,7 @@ export function handlePackageGroupsInput(data: string, args: {
 	}
 	if (kb.matches(data, "tui.select.up")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.entries.length, -1));
 	if (kb.matches(data, "tui.select.down")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.entries.length, 1));
+	if (data === "A") return void args.onAddResource?.();
 	const selected = args.entries[args.selectedIndex];
 	if (selected && data === "P" && selected.kind === "item") return args.onTogglePinned(selected.item);
 	if (selected && data === " " && selected.kind === "item") return args.onToggleItem(selected.item);
@@ -212,6 +218,7 @@ export function handlePackageItemsInput(data: string, args: {
 	onOpenDetailItem: (item: ResourceItem) => void;
 	onTogglePinned: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
+	onAddResource?: () => void;
 	searchInput: Input;
 	getSearchQuery: () => string;
 	onInvalidatePackageViewCaches: (packageId: string | undefined, category: PackageContentCategory) => void;
@@ -230,6 +237,7 @@ export function handlePackageItemsInput(data: string, args: {
 		if (args.selectedItem) args.onTogglePinned(args.selectedItem);
 		return;
 	}
+	if (data === "A") return void args.onAddResource?.();
 	if (data === " ") {
 		if (args.selectedItem) args.onToggleItem(args.selectedItem);
 		return;

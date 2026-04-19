@@ -147,18 +147,19 @@ If you update the local package after installing it, run:
 
 ### Core command groups
 
-- `add` — register a package source in project or user settings
+- `add` — register a package source or local resource path in project or user settings
 - `enable` / `disable` — toggle packages or resources
 - `remove` — remove configured resources from settings
 - `expose` / `hide` — show or hide package-contained resources in top-level categories
 - `sync` — re-run discovery and refresh the current resource index
 
-### Add a package source
+### Add a package source or local resource
 
 ```bash
-/resource add <package-source>
-/resource add <package-source> project
-/resource add <package-source> user
+/resource add <source-or-path>
+/resource add <source-or-path> project
+/resource add <source-or-path> user
+/resource add [category] <source-or-path> [project|user]
 ```
 
 Examples:
@@ -166,7 +167,12 @@ Examples:
 ```bash
 /resource add npm:@scope/some-pi-package
 /resource add git:https://github.com/user/some-pi-package.git user
+/resource add https://github.com/user/some-pi-package
 /resource add ../local-pi-package project
+/resource add extension ./extensions/resource-center/index.ts
+/resource add skill ./skills/my-skill
+/resource add prompt ./prompts/review.md
+/resource add theme ./themes/my-theme.json
 ```
 
 ### Enable, disable, remove, expose, or hide resources
@@ -229,6 +235,7 @@ Examples:
 - `PageUp/PageDown` — jump through the list
 - `Enter` — open resource details
 - `Space` — enable/disable or apply the selected item
+- `A` — add a package source or local resource
 - `P` — pin or unpin the selected item
 - `Shift+S` — open Resource Center settings
 - `Esc` — close or go back
@@ -239,6 +246,7 @@ Pinned resources are kept at the top of sorted lists.
 
 - `Up/Down` — choose an action
 - `Enter` — confirm action
+- `A` — add a package source or local resource
 - `P` — pin or unpin the current item
 - `Shift+S` — open Resource Center settings
 - `Esc` — return to the list

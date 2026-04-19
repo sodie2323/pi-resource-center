@@ -5,6 +5,7 @@ import { lstat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import type { FileResourceItem, ResourceCategory, ResourceItem } from "../types.js";
+import type { AddPathCategory } from "../resource/add-detect.js";
 import {
 	USER_AGENT_DIR,
 	getProjectSettingsPath,
@@ -106,6 +107,23 @@ export async function addPackageToSettings(cwd: string, source: string, scope: "
 		return settingsPath;
 	} catch (error: unknown) {
 		throw new Error(`Failed to add package source ${source} to ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
+	}
+}
+
+export async function addPathResourceToSettings(cwd: string, category: AddPathCategory, path: string, scope: "project" | "user" = "project"): Promise<string> {
+	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
+	try {
+		const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
+		const current = [...(settingsFile.settings[category] ?? [])];
+		const relativePath = toSettingsPath(path, settingsFile.dir);
+		const normalizedTargetPath = normalizeFsPath(resolve(settingsFile.dir, normalizeConfigPath(relativePath)));
+		const filtered = current.filter((entry) => normalizeFsPath(resolve(settingsFile.dir, normalizeConfigPath(entry))) !== normalizedTargetPath);
+		filtered.push(relativePath);
+		settingsFile.settings[category] = filtered;
+		await saveSettingsFile(settingsPath, settingsFile.settings);
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to add ${category.slice(0, -1)} path ${path} to ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
 }
 

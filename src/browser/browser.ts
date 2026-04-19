@@ -1,6 +1,8 @@
 /**
  * 资源浏览器核心状态容器：负责协调 UI 状态、渲染适配、缓存与回调。
  */
+import { access, readdir } from "node:fs/promises";
+import { basename, dirname, resolve, sep } from "node:path";
 import { getSettingsListTheme, type Theme } from "@mariozechner/pi-coding-agent";
 import { DEFAULT_EXTERNAL_SKILL_SOURCES, type ResourceCenterSettings } from "../settings.js";
 import {
@@ -62,18 +64,36 @@ import {
 	handlePackageItemsInput as handlePackageItemsInputMode,
 	handleSettingsInput as handleSettingsInputMode,
 } from "./input.js";
-import { getDetailFooterText, getEmptyPackageCategoryMessage, getHeaderTitle, getListFooterText, getPackageFooterText, moveSelection } from "./navigation.js";
+import { getAddFooterText, getDetailFooterText, getEmptyPackageCategoryMessage, getHeaderTitle, getListFooterText, getPackageFooterText, moveSelection } from "./navigation.js";
 import { isContainedResource, isPackageItem, isThemeItem } from "../resource/capabilities.js";
 import { getPackageResourceId, isSameResource } from "../resource/identity.js";
 import { prunePinnedResourceIds } from "../resource/state-prune.js";
+import { detectAddTargetSync, type AddPathCategory, type AddTarget } from "../resource/add-detect.js";
 import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
+
+const ADD_SOURCE_SUGGESTIONS = [
+	{ value: "npm:", description: "Install a package from npm" },
+	{ value: "git:", description: "Install a package from a git URL" },
+	{ value: "https://", description: "Install a package from a remote HTTPS URL" },
+	{ value: "http://", description: "Install a package from a remote HTTP URL" },
+	{ value: "./", description: "Install a package from a local path relative to the current project" },
+	{ value: "../", description: "Install a package from a sibling or parent directory" },
+	{ value: "/", description: "Install a package from an absolute path" },
+	{ value: "E:/", description: "Install a package from an absolute Windows path" },
+	{ value: "C:/", description: "Install a package from an absolute Windows path" },
+] as const;
+const NOISY_DIRECTORY_NAMES = new Set([".git", "node_modules", ".next", "dist", "build", "coverage"]);
+
+type AddSuggestion = { value: string; label: string; description?: string };
 
 export class ResourceBrowser implements Component, Focusable {
 	private readonly theme: Theme;
 	private readonly callbacks: BrowserCallbacks;
+	private readonly cwd: string;
 	private readonly mainSearchInput: Input;
 	private readonly packageSearchInput: Input;
 	private readonly settingsSearchInput: Input;
+	private readonly addInput: Input;
 	private readonly resources: ResourceIndex;
 	private settings: ResourceCenterSettings;
 	private category: ResourceCategory;
@@ -97,6 +117,17 @@ export class ResourceBrowser implements Component, Focusable {
 	private settingsInlineEditItemId: string | undefined;
 	private settingsInlineEditInput: Input | undefined;
 	private settingsInlineEditOriginalValue: string | undefined;
+	private addScope: "project" | "user" = "project";
+	private addDetection: AddTarget = { kind: "invalid", reason: "Enter a package source or local path." };
+	private addSelectedCandidateIndex = 0;
+	private addSuggestions: AddSuggestion[] = [];
+	private addSelectedSuggestionIndex = 0;
+	private addLoading = false;
+	private addLoadingText: string | undefined;
+	private addMessage: { type: "info" | "warning" | "error"; text: string } | undefined;
+	private globalStatus: { type: "info" | "warning" | "error" | "loading"; text: string } | undefined;
+	private addRequestId = 0;
+	private addReturnMode: Exclude<BrowserMode, "add"> = "list";
 	private visibleCategoryItemsCache = new Map<ResourceCategory, ResourceItem[]>();
 	private searchTextCache = new Map<string, { base: string; withDescription: string; withPath: string; withDescriptionAndPath: string }>();
 	private containedItemsCache = new Map<string, ResourceItem[]>();
@@ -124,20 +155,24 @@ export class ResourceBrowser implements Component, Focusable {
 		this.mainSearchInput.focused = value;
 		this.packageSearchInput.focused = value;
 		this.settingsSearchInput.focused = value;
+		this.addInput.focused = value;
 	}
 
-	constructor(theme: Theme, resources: ResourceIndex, category: ResourceCategory, settings: ResourceCenterSettings, callbacks: BrowserCallbacks) {
+	constructor(theme: Theme, resources: ResourceIndex, category: ResourceCategory, settings: ResourceCenterSettings, callbacks: BrowserCallbacks, cwd: string) {
 		this.theme = theme;
 		this.resources = resources;
 		this.settings = prunePinnedResourceIds(settings, resources);
 		this.category = category;
 		this.callbacks = callbacks;
+		this.cwd = cwd;
 		this.mainSearchInput = new Input();
 		this.packageSearchInput = new Input();
 		this.settingsSearchInput = new Input();
+		this.addInput = new Input();
 		this.mainSearchInput.setValue("");
 		this.packageSearchInput.setValue("");
 		this.settingsSearchInput.setValue("");
+		this.addInput.setValue("");
 		this.rebuildPinnedRank();
 		this.rebuildSearchTextCache();
 		this.persistPrunedSettings(settings);
@@ -148,6 +183,7 @@ export class ResourceBrowser implements Component, Focusable {
 		this.mainSearchInput.invalidate();
 		this.packageSearchInput.invalidate();
 		this.settingsSearchInput.invalidate();
+		this.addInput.invalidate();
 		this.settingsList?.invalidate();
 	}
 
@@ -208,6 +244,10 @@ export class ResourceBrowser implements Component, Focusable {
 			this.handleSettingsInput(data);
 			return;
 		}
+		if (this.mode === "add") {
+			this.handleAddInput(data);
+			return;
+		}
 
 		handleListInput(data, {
 			selectedItem: this.filteredItems[this.selectedIndex],
@@ -219,6 +259,7 @@ export class ResourceBrowser implements Component, Focusable {
 			onOpenSelectedItem: () => this.openSelectedItem(),
 			onTogglePinned: (item) => this.togglePinned(item),
 			onToggleItem: (item) => this.toggleItem(item),
+			onAddResource: () => this.openAddMode(),
 			searchInput: this.mainSearchInput,
 			onApplyFilter: () => this.applyFilter(),
 		});
@@ -227,6 +268,8 @@ export class ResourceBrowser implements Component, Focusable {
 	render(width: number): string[] {
 		const innerWidth = Math.max(1, width - 2);
 		const lines: string[] = [];
+		const globalStatus = this.renderGlobalStatus(width);
+		if (globalStatus) lines.push(globalStatus);
 		lines.push(this.renderTopRule(width));
 		lines.push(...this.wrapBlock(this.renderHeader(innerWidth), width));
 		if (this.mode === "detail") {
@@ -242,6 +285,13 @@ export class ResourceBrowser implements Component, Focusable {
 			lines.push(...this.wrapBlock(this.renderSettingsSearch(innerWidth), width));
 			lines.push("");
 			lines.push(...this.wrapBlock(this.renderSettingsList(innerWidth), width));
+			return lines;
+		}
+		if (this.mode === "add") {
+			lines.push("");
+			lines.push(...this.wrapBlock(this.renderAddPage(innerWidth), width));
+			lines.push("");
+			lines.push(...this.wrapBlock([this.renderAddFooter(innerWidth)], width));
 			return lines;
 		}
 		if (this.mode === "packageGroups") {
@@ -276,7 +326,9 @@ export class ResourceBrowser implements Component, Focusable {
 		const count =
 			this.mode === "settings"
 				? this.getFilteredSettingsItems(this.settingsSection).length
-				: this.mode === "packageItems"
+				: this.mode === "add"
+					? 1
+					: this.mode === "packageItems"
 					? this.packageContentsItems.length
 					: this.mode === "packageGroups"
 						? this.getPackageGroupEntries().length
@@ -362,8 +414,61 @@ export class ResourceBrowser implements Component, Focusable {
 		return this.renderFooterWithSettingsHint(width, getListFooterText(selectedCategory));
 	}
 
+	private renderAddPage(width: number): string[] {
+		const scopeLabel = this.addScope === "project"
+			? this.theme.fg("success", "project")
+			: this.theme.fg("warning", "user");
+		const lines = [
+			truncateToWidth(`Scope: ${scopeLabel}  ${this.theme.fg("dim", "(Tab to switch)")}`, width, "…"),
+			truncateToWidth(`Source: ${this.addInput.render(Math.max(1, width - 8))[0] ?? ""}`, width, "…"),
+		];
+		if (this.addInput.getValue().trim() && this.addSuggestions.length > 0 && !this.addLoading) {
+			lines.push("");
+			for (const [index, suggestion] of this.addSuggestions.entries()) {
+				const isSelected = index === this.addSelectedSuggestionIndex;
+				const prefix = isSelected ? this.theme.fg("accent", "> ") : "  ";
+				const label = isSelected ? this.theme.fg("accent", suggestion.label) : suggestion.label;
+				const description = suggestion.description ? this.theme.fg("dim", `  ${suggestion.description}`) : "";
+				lines.push(truncateToWidth(`${prefix}${label}${description}`, width, "…"));
+			}
+		}
+		lines.push("");
+		if (this.addDetection.kind === "package") {
+			lines.push(truncateToWidth(this.theme.fg("success", `Detected: package · ${this.addDetection.description}`), width, "…"));
+		} else if (this.addDetection.kind === "path") {
+			lines.push(truncateToWidth(this.theme.fg("success", `Detected: ${this.formatAddCategoryLabel(this.addDetection.category)} · ${this.addDetection.description}`), width, "…"));
+		} else if (this.addDetection.kind === "ambiguous") {
+			lines.push(truncateToWidth(this.theme.fg("warning", this.addDetection.description), width, "…"));
+			lines.push("");
+			for (const [index, candidate] of this.addDetection.candidates.entries()) {
+				const prefix = index === this.addSelectedCandidateIndex ? this.theme.fg("accent", "> ") : "  ";
+				lines.push(truncateToWidth(`${prefix}${this.formatAddCategoryLabel(candidate)}`, width, "…"));
+			}
+		} else {
+			lines.push(truncateToWidth(this.theme.fg("warning", this.addDetection.reason), width, "…"));
+		}
+		return lines;
+	}
+
+	private renderGlobalStatus(width: number): string | undefined {
+		if (!this.globalStatus) return undefined;
+		const hasInlineDetailStatus = this.mode === "detail" && (Boolean(this.loadingAction) || Boolean(this.actionMessage));
+		if (hasInlineDetailStatus) return undefined;
+		if (this.globalStatus.type === "loading") {
+			const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+			const frame = frames[this.loadingFrame % frames.length]!;
+			return truncateToWidth(`${this.theme.fg("accent", frame)} ${this.theme.fg("dim", this.globalStatus.text)}`, width, "…");
+		}
+		const color = this.globalStatus.type === "error" ? "error" : this.globalStatus.type === "warning" ? "warning" : "dim";
+		return truncateToWidth(this.theme.fg(color, this.globalStatus.text), width, "…");
+	}
+
 	private renderDetailFooter(width: number): string {
 		return this.renderFooterWithSettingsHint(width, getDetailFooterText());
+	}
+
+	private renderAddFooter(width: number): string {
+		return this.renderFooterWithSettingsHint(width, getAddFooterText(this.addLoading));
 	}
 
 	private renderPackageFooter(width: number): string {
@@ -471,6 +576,7 @@ export class ResourceBrowser implements Component, Focusable {
 			onToggleExpose: (item) => this.toggleExpose(item),
 			onUpdateItem: (item) => this.callbacks.onUpdate?.(item),
 			onRemoveItem: (item) => this.callbacks.onRemove?.(item),
+			onAddResource: () => this.openAddMode(),
 		});
 	}
 
@@ -495,6 +601,7 @@ export class ResourceBrowser implements Component, Focusable {
 			onRefreshPackageContents: () => this.refreshPackageContentsItems(),
 			onTogglePinned: (item) => this.togglePinned(item),
 			onToggleItem: (item) => this.toggleItem(item),
+			onAddResource: () => this.openAddMode(),
 			searchInput: this.packageSearchInput,
 			getSearchQuery: () => this.getSearchQuery(),
 			onInvalidatePackageViewCaches: (packageId) => this.invalidatePackageViewCaches(packageId),
@@ -588,6 +695,7 @@ export class ResourceBrowser implements Component, Focusable {
 			onOpenDetailItem: (item) => this.openDetailItem(item, "packageItems"),
 			onTogglePinned: (item) => this.togglePinned(item),
 			onToggleItem: (item) => this.toggleItem(item),
+			onAddResource: () => this.openAddMode(),
 			searchInput: this.packageSearchInput,
 			getSearchQuery: () => this.getSearchQuery(),
 			onInvalidatePackageViewCaches: (packageId, category) => this.invalidatePackageViewCaches(packageId, category),
@@ -599,7 +707,7 @@ export class ResourceBrowser implements Component, Focusable {
 		if (this.loadingAction === action) {
 			const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 			const frame = frames[this.loadingFrame % frames.length]!;
-			return this.theme.fg("accent", `${frame} ${this.loadingText ?? "Working..."}`);
+			return `${this.theme.fg("accent", frame)} ${this.theme.fg("dim", this.loadingText ?? "Working...")}`;
 		}
 		if (!this.actionMessage || this.actionMessage.action !== action) return undefined;
 		const color =
@@ -607,7 +715,7 @@ export class ResourceBrowser implements Component, Focusable {
 				? "error"
 				: this.actionMessage.type === "warning"
 					? "warning"
-					: "accent";
+					: "dim";
 		return this.theme.fg(color, this.actionMessage.text);
 	}
 
@@ -634,6 +742,7 @@ export class ResourceBrowser implements Component, Focusable {
 		this.loadingAction = action;
 		this.loadingText = text;
 		this.loadingFrame = 0;
+		this.globalStatus = { type: "loading", text };
 		if (this.actionMessage?.action === action) {
 			this.actionMessage = undefined;
 		}
@@ -646,6 +755,15 @@ export class ResourceBrowser implements Component, Focusable {
 		}
 	}
 
+	public setGlobalStatus(type: "info" | "warning" | "error" | "loading", text: string | undefined): void {
+		if (!text) {
+			this.globalStatus = undefined;
+			return;
+		}
+		const normalized = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join(" · ").replace(/\s+/g, " ").trim();
+		this.globalStatus = normalized ? { type, text: normalized } : undefined;
+	}
+
 	private clearTransientActionMessage(): void {
 		if (!this.loadingAction) {
 			this.actionMessage = undefined;
@@ -653,8 +771,12 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	public advanceLoadingFrame(): void {
-		if (!this.loadingAction) return;
+		if (!this.loadingAction && !this.addLoading) return;
 		this.loadingFrame += 1;
+	}
+
+	public hasLoadingState(): boolean {
+		return Boolean(this.loadingAction || this.addLoading);
 	}
 
 	public setResources(resources: ResourceIndex): void {
@@ -707,7 +829,6 @@ export class ResourceBrowser implements Component, Focusable {
 		this.detailSelectedIndex = 0;
 		this.confirmingRemove = false;
 		this.actionMessage = undefined;
-		this.stopActionLoading();
 	}
 
 	private moveListSelection(delta: number): void {
@@ -932,6 +1053,196 @@ export class ResourceBrowser implements Component, Focusable {
 		const items = selectPackageContainedItems(this.resources, pkg, category, this.settings, (item) => this.isPinned(item), (item) => this.getPinnedRank(item));
 		this.containedItemsCache.set(cacheKey, items);
 		return items;
+	}
+
+	private getCurrentAddScopeContext(): "project" | "user" {
+		if (this.mode === "detail" && this.detailItem) return this.detailItem.scope;
+		if ((this.mode === "packageGroups" || this.mode === "packageItems") && this.packageItem?.category === "packages") return this.packageItem.scope;
+		const selectedItem = this.filteredItems[this.selectedIndex];
+		return selectedItem?.scope ?? "project";
+	}
+
+	private openAddMode(): void {
+		if (this.mode === "add") return;
+		this.addReturnMode = this.mode;
+		this.addInput.setValue("");
+		this.addScope = this.getCurrentAddScopeContext();
+		this.addDetection = { kind: "invalid", reason: "Enter a package source or local path." };
+		this.addSelectedCandidateIndex = 0;
+		this.addSuggestions = [];
+		this.addSelectedSuggestionIndex = 0;
+		this.mode = "add";
+		this.refreshAddDetection();
+		void this.refreshAddSuggestions();
+	}
+
+	private closeAddMode(): void {
+		this.mode = this.addReturnMode;
+		if (!this.addLoading) {
+			this.addLoadingText = undefined;
+			this.addMessage = undefined;
+		}
+	}
+
+	private handleAddInput(data: string): void {
+		const kb = getKeybindings();
+		if (kb.matches(data, "tui.select.cancel")) {
+			this.closeAddMode();
+			return;
+		}
+		if (data === "S") {
+			this.openSettings();
+			return;
+		}
+		if (this.addLoading) return;
+		if (kb.matches(data, "tui.input.tab")) {
+			this.addScope = this.addScope === "project" ? "user" : "project";
+			return;
+		}
+		if (this.addSuggestions.length > 0) {
+			if (kb.matches(data, "tui.select.up")) {
+				this.addSelectedSuggestionIndex = moveSelection(this.addSelectedSuggestionIndex, this.addSuggestions.length, -1);
+				return;
+			}
+			if (kb.matches(data, "tui.select.down")) {
+				this.addSelectedSuggestionIndex = moveSelection(this.addSelectedSuggestionIndex, this.addSuggestions.length, 1);
+				return;
+			}
+		} else if (this.addDetection.kind === "ambiguous") {
+			if (kb.matches(data, "tui.select.up")) {
+				this.addSelectedCandidateIndex = moveSelection(this.addSelectedCandidateIndex, this.addDetection.candidates.length, -1);
+				return;
+			}
+			if (kb.matches(data, "tui.select.down")) {
+				this.addSelectedCandidateIndex = moveSelection(this.addSelectedCandidateIndex, this.addDetection.candidates.length, 1);
+				return;
+			}
+		}
+		if (kb.matches(data, "tui.select.confirm")) {
+			const request = this.addInput.getValue().trim();
+			const selectedSuggestion = this.addSuggestions[this.addSelectedSuggestionIndex];
+			if (selectedSuggestion && selectedSuggestion.value !== request) {
+				this.acceptAddSuggestion();
+				return;
+			}
+			if (!request) return;
+			if (this.addDetection.kind === "package" || this.addDetection.kind === "path") {
+				void this.submitAddRequest({ input: request, scope: this.addScope });
+				return;
+			}
+			if (this.addDetection.kind === "ambiguous") {
+				void this.submitAddRequest({ input: request, scope: this.addScope, preferredCategory: this.addDetection.candidates[this.addSelectedCandidateIndex] });
+			}
+			return;
+		}
+		this.addInput.handleInput(data);
+		this.refreshAddDetection();
+		void this.refreshAddSuggestions();
+	}
+
+	private refreshAddDetection(): void {
+		const result = detectAddTargetSync(this.addInput.getValue(), this.cwd);
+		this.addDetection = result;
+		if (result.kind === "ambiguous") {
+			this.addSelectedCandidateIndex = Math.max(0, Math.min(this.addSelectedCandidateIndex, result.candidates.length - 1));
+		} else {
+			this.addSelectedCandidateIndex = 0;
+		}
+	}
+
+	private acceptAddSuggestion(): void {
+		const suggestion = this.addSuggestions[this.addSelectedSuggestionIndex];
+		if (!suggestion) return;
+		this.addInput.setValue(suggestion.value);
+		(this.addInput as Input & { cursor?: number }).cursor = suggestion.value.length;
+		this.refreshAddDetection();
+		void this.refreshAddSuggestions();
+	}
+
+	private async submitAddRequest(request: { input: string; scope: "project" | "user"; preferredCategory?: AddPathCategory }): Promise<void> {
+		this.addLoading = true;
+		this.addLoadingText = `Adding ${request.input}`;
+		this.addMessage = undefined;
+		this.globalStatus = { type: "loading", text: `Adding ${request.input}` };
+		this.loadingFrame = 0;
+		this.callbacks.onRequestRender?.();
+		try {
+			await this.callbacks.onAdd?.(request);
+			this.addLoading = false;
+			this.addLoadingText = undefined;
+			this.addMessage = undefined;
+			this.globalStatus = undefined;
+			if (this.mode === "add") this.closeAddMode();
+			this.callbacks.onRequestRender?.();
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			const normalized = message.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join(" · ");
+			this.addLoading = false;
+			this.addLoadingText = undefined;
+			this.addMessage = { type: "error", text: normalized };
+			this.globalStatus = undefined;
+			this.callbacks.onRequestRender?.();
+		}
+	}
+
+	private async refreshAddSuggestions(): Promise<void> {
+		const requestId = ++this.addRequestId;
+		const suggestions = await this.getAddSuggestions(this.addInput.getValue());
+		if (requestId !== this.addRequestId || this.mode !== "add") return;
+		this.addSuggestions = suggestions.slice(0, 6);
+		this.addSelectedSuggestionIndex = Math.max(0, Math.min(this.addSelectedSuggestionIndex, this.addSuggestions.length - 1));
+	}
+
+	private async getAddSuggestions(input: string): Promise<AddSuggestion[]> {
+		const value = input.trim();
+		if (!value) return [];
+		if (isLikelyLocalPathInput(value)) {
+			const pathSuggestions = await this.getLocalAddPathSuggestions(value);
+			if (pathSuggestions.length > 0) return pathSuggestions;
+		}
+		return ADD_SOURCE_SUGGESTIONS
+			.filter((item) => item.value.toLowerCase().startsWith(value.toLowerCase()))
+			.map((item) => ({ value: item.value, label: item.value, description: item.description }));
+	}
+
+	private async getLocalAddPathSuggestions(input: string): Promise<AddSuggestion[]> {
+		const normalizedInput = input.replace(/\\/g, "/");
+		const hasTrailingSlash = normalizedInput.endsWith("/");
+		const baseInput = hasTrailingSlash ? normalizedInput.slice(0, -1) : normalizedInput;
+		const searchDirInput = hasTrailingSlash ? normalizedInput : dirname(baseInput).replace(/\\/g, "/");
+		const fragment = hasTrailingSlash ? "" : basename(baseInput);
+		const resolvedSearchDir = this.resolveLocalAddCompletionDir(searchDirInput);
+		if (!resolvedSearchDir) return [];
+		try {
+			const entries = await readdir(resolvedSearchDir, { withFileTypes: true });
+			const candidates = entries
+				.filter((entry) => entry.isDirectory())
+				.map((entry) => entry.name)
+				.filter((name) => name.toLowerCase().startsWith(fragment.toLowerCase()));
+			const scored = await Promise.all(candidates.map(async (name) => ({ name, score: await scoreLocalPackageDirectory(resolvedSearchDir, name) })));
+			return scored
+				.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+				.map(({ name, score }) => ({
+					value: joinCompletionPath(searchDirInput, name),
+					label: `${name}/`,
+					description: describeLocalPackageDirectory(name, score),
+				}));
+		} catch {
+			return [];
+		}
+	}
+
+	private resolveLocalAddCompletionDir(searchDirInput: string): string | undefined {
+		if (!searchDirInput || searchDirInput === ".") return this.cwd;
+		if (searchDirInput === "/") return sep;
+		if (/^[A-Za-z]:\/$/.test(searchDirInput)) return searchDirInput;
+		if (/^[A-Za-z]:\//.test(searchDirInput)) return resolve(searchDirInput);
+		if (searchDirInput.startsWith("/")) return resolve(searchDirInput);
+		return resolve(this.cwd, searchDirInput);
+	}
+
+	private formatAddCategoryLabel(category: AddPathCategory): string {
+		return category.slice(0, 1).toUpperCase() + category.slice(1);
 	}
 
 	private openSettings(): void {
@@ -1257,4 +1568,45 @@ export class ResourceBrowser implements Component, Focusable {
 		this.settingsList = undefined;
 		this.settingsListSection = undefined;
 	}
+}
+
+function isLikelyLocalPathInput(value: string): boolean {
+	return value.startsWith("./") || value.startsWith("../") || value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+async function scoreLocalPackageDirectory(parentDir: string, name: string): Promise<number> {
+	const dirPath = resolve(parentDir, name);
+	let score = 0;
+	if (NOISY_DIRECTORY_NAMES.has(name)) score -= 100;
+	if (await pathExists(resolve(dirPath, "package.json"))) score += 100;
+	if (name.startsWith("pi-")) score += 25;
+	if (await pathExists(resolve(dirPath, "extensions"))) score += 15;
+	if (await pathExists(resolve(dirPath, "skills"))) score += 10;
+	if (await pathExists(resolve(dirPath, ".pi"))) score += 10;
+	return score;
+}
+
+function describeLocalPackageDirectory(name: string, score: number): string {
+	if (NOISY_DIRECTORY_NAMES.has(name)) return "Common build/tooling directory";
+	if (score >= 100) return "Local package directory (contains package.json)";
+	if (score >= 25) return "Likely local package directory";
+	return "Local directory";
+}
+
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function joinCompletionPath(baseInput: string, name: string): string {
+	const normalizedBase = baseInput.replace(/\\/g, "/");
+	if (!normalizedBase || normalizedBase === ".") return `./${name}/`;
+	if (normalizedBase === "/") return `/${name}/`;
+	if (/^[A-Za-z]:\/$/.test(normalizedBase)) return `${normalizedBase}${name}/`;
+	if (normalizedBase.endsWith("/")) return `${normalizedBase}${name}/`;
+	return `${normalizedBase}/${name}/`;
 }

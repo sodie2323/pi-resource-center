@@ -12,8 +12,9 @@ import {
 	getRemoveSuccessMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
-import { addPackageToSettings, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import { addPackageToSettings, addPathResourceToSettings, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import { normalizeCategoryAlias } from "./completions.js";
+import { detectAddTarget, getAddTargetSuccessLabel, type AddPathCategory } from "./add-detect.js";
 import type { ReloadBehavior } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
@@ -23,20 +24,36 @@ export async function handleAddCommand(
 	refreshCompletions: () => Promise<void>,
 ): Promise<void> {
 	const parts = args.split(/\s+/).filter(Boolean);
-	if (parts.length === 0 || parts.length > 2) {
-		ctx.ui.notify("Usage: /resource add <package-source> [project|user]", "info");
+	if (parts.length === 0) {
+		ctx.ui.notify("Usage: /resource add [category] <source-or-path> [project|user]", "info");
 		return;
 	}
-	const source = parts[0]!;
-	const scopeArg = parts[1];
-	if (scopeArg && scopeArg !== "project" && scopeArg !== "user") {
-		ctx.ui.notify(`Unknown scope "${scopeArg}". Use project or user.`, "warning");
+	let scope: "project" | "user" = "project";
+	const lastPart = parts.at(-1);
+	if (lastPart === "project" || lastPart === "user") {
+		scope = lastPart;
+		parts.pop();
+	}
+	let preferredCategory: AddPathCategory | undefined;
+	if (parts[0] && isCategoryAlias(parts[0])) {
+		const normalized = normalizeCategoryAlias(parts[0]);
+		parts.shift();
+		if (normalized !== "packages") preferredCategory = normalized;
+	}
+	if (parts.length !== 1) {
+		ctx.ui.notify("Usage: /resource add [category] <source-or-path> [project|user]", "info");
 		return;
 	}
-	const scope = scopeArg === "user" ? "user" : "project";
-	const settingsPath = await addPackageToSettings(ctx.cwd, source, scope);
-	await refreshCompletions();
-	await reloadAfterSettingsChange(ctx, `Added package ${source} · ${settingsPath}`);
+	try {
+		const message = await addResourceFromInput(ctx.cwd, parts[0]!, scope, preferredCategory);
+		await refreshCompletions();
+		await reloadAfterSettingsChange(ctx, message);
+		return;
+	} catch (error: unknown) {
+		const detail = error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(detail, "warning");
+		return;
+	}
 }
 
 export async function handleMutateCommand(
@@ -158,6 +175,23 @@ export async function handleExposureCommand(
 	const statePath = await setResourceExposed(ctx.cwd, item, exposed);
 	await refreshCompletions();
 	ctx.ui.notify(getExposeSuccessMessage(item, exposed, statePath), "info");
+}
+
+export async function addResourceFromInput(
+	cwd: string,
+	input: string,
+	scope: "project" | "user" = "project",
+	preferredCategory?: AddPathCategory,
+): Promise<string> {
+	const target = await detectAddTarget(input, cwd, { preferredCategory });
+	if (target.kind === "invalid") throw new Error(target.reason);
+	if (target.kind === "ambiguous") {
+		throw new Error(`Couldn't infer resource type for ${target.path}. Choose one of: ${target.candidates.join(", ")}`);
+	}
+	const settingsPath = target.kind === "package"
+		? await addPackageToSettings(cwd, target.source, scope)
+		: await addPathResourceToSettings(cwd, target.category, target.path, scope);
+	return `Added ${getAddTargetSuccessLabel(target)} · ${settingsPath}`;
 }
 
 export async function reloadAfterSettingsChange(ctx: ExtensionCommandContext, message: string, reloadBehavior?: ReloadBehavior): Promise<void> {
