@@ -846,6 +846,7 @@ export class ResourceBrowser implements Component, Focusable {
 		this.detailReturnMode = returnMode;
 		this.detailSelectedIndex = 0;
 		this.confirmingRemove = false;
+		this.actionMessage = undefined;
 		this.mode = "detail";
 		this.callbacks.onInspect?.(item);
 	}
