@@ -19,6 +19,7 @@ import {
 	readResourceCenterSettings,
 	readSettingsFile,
 	resolveHomePath,
+	DEFAULT_EXTERNAL_SKILL_SOURCES,
 	syncPrunedExposedResources,
 	type ExternalSkillSourceSetting,
 	type PackageSource,
@@ -199,6 +200,7 @@ async function createFileItem(
 	const packageSource = resource.metadata.origin === "package" ? resource.metadata.source : undefined;
 	const packageRelativePath = getRelativeResourcePath(resource);
 	const promptMetadata = category === "prompts" ? await readPromptMetadata(resource.path, caches) : undefined;
+	const sourceLabel = !packageSource ? inferConfiguredSourceLabel(resource.path) : undefined;
 	return {
 		category,
 		id: `${category}:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
@@ -206,6 +208,7 @@ async function createFileItem(
 		scope,
 		path: resource.path,
 		source: normalizeSource(resource.metadata),
+		sourceLabel,
 		description: category === "skills"
 			? await readSkillDescription(resource.path, caches) ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
 			: category === "prompts"
@@ -442,6 +445,15 @@ function getRelativeResourcePath(resource: ResolvedResource): string | undefined
 
 function normalizeConfigPath(value: string): string {
 	return value.replace(/^[+\-!]/, "").replace(/\\/g, "/");
+}
+
+function inferConfiguredSourceLabel(path: string): string | undefined {
+	const normalizedPath = normalizeConfigPath(path).toLowerCase();
+	for (const source of DEFAULT_EXTERNAL_SKILL_SOURCES) {
+		const rootPath = normalizeConfigPath(resolveHomePath(source.path)).toLowerCase();
+		if (normalizedPath === rootPath || normalizedPath.startsWith(`${rootPath}/`)) return source.label;
+	}
+	return undefined;
 }
 
 function normalizeSource(metadata: PathMetadata): string {
