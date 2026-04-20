@@ -232,18 +232,21 @@ export function renderPackageItemsPage(args: {
 	pkg: ResourceItem | undefined;
 	items: ResourceItem[];
 	selectedIndex: number;
+	maxVisible: number;
 	isPinned: (item: ResourceItem) => boolean;
 	emptyMessage: string;
 	formatBinaryToggle: (enabled: boolean, bold?: boolean) => string;
 }): string[] {
-	const { theme, width, pkg, items, selectedIndex, isPinned, emptyMessage, formatBinaryToggle } = args;
+	const { theme, width, pkg, items, selectedIndex, maxVisible, isPinned, emptyMessage, formatBinaryToggle } = args;
 	if (!pkg || pkg.category !== "packages") return [theme.fg("muted", "No package selected")];
 	const lines = [""];
 	if (items.length === 0) {
 		lines.push(theme.fg("muted", emptyMessage));
 		return lines;
 	}
-	for (let index = 0; index < items.length; index++) {
+	const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), items.length - maxVisible));
+	const endIndex = Math.min(items.length, startIndex + maxVisible);
+	for (let index = startIndex; index < endIndex; index++) {
 		const item = items[index]!;
 		const selected = index === selectedIndex;
 		const marker = selected ? theme.fg("accent", "▌") : theme.fg("dim", " ");
@@ -260,6 +263,9 @@ export function renderPackageItemsPage(args: {
 		let line = truncateToWidth(`${primary}${" ".repeat(spacing)}${label}`, width, "…");
 		line = selected ? theme.bg("selectedBg", line) : theme.fg("text", line);
 		lines.push(line);
+	}
+	if (startIndex > 0 || endIndex < items.length) {
+		lines.push(theme.fg("dim", truncateToWidth(`(${selectedIndex + 1}/${items.length})`, width, "")));
 	}
 	return lines;
 }

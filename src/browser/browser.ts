@@ -388,6 +388,7 @@ export class ResourceBrowser implements Component, Focusable {
 			pkg: this.packageItem,
 			items: this.packageContentsItems,
 			selectedIndex: this.packageContentsSelectedIndex,
+			maxVisible: this.maxVisible,
 			isPinned: (item) => this.isPinned(item),
 			emptyMessage: this.getEmptyPackageCategoryMessage(this.packageContentsCategory),
 			formatBinaryToggle: (enabled, bold) => this.formatBinaryToggle(enabled, bold),
