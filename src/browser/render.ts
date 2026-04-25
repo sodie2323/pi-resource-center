@@ -15,7 +15,7 @@ export function renderHeader(theme: BrowserTheme, width: number, title: string, 
 }
 
 export function renderTabs(theme: BrowserTheme, width: number, category: ResourceCategory): string[] {
-	const title = theme.fg("muted", "(tab to cycle)");
+	const title = theme.fg("muted", "(← → or Tab to cycle)");
 	const tabs = CATEGORY_ORDER.map((entry) => {
 		const label = ` ${CATEGORY_LABELS[entry]} `;
 		if (entry === category) {
@@ -277,7 +277,7 @@ export function renderFooterWithSettingsHint(theme: BrowserTheme, width: number,
 }
 
 export function renderSettingsTabs(theme: BrowserTheme, width: number, section: SettingsSection): string[] {
-	const title = theme.fg("muted", "(tab to cycle)");
+	const title = theme.fg("muted", "(← → or Tab to cycle)");
 	const tabs = SETTINGS_SECTION_ORDER.map((entry) => {
 		const label = ` ${SETTINGS_SECTION_LABELS[entry]} `;
 		if (entry === section) {

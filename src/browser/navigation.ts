@@ -38,11 +38,11 @@ export function getDetailTitle(item: ResourceItem): string {
 }
 
 export function getListFooterText(_selectedCategory: ResourceCategory): string {
-	return "↑↓ move · Space toggle · A add · P pin/unpin · Enter details · Esc close";
+	return "Space toggle · A add · P pin/unpin · Enter details · Esc close";
 }
 
 export function getDetailFooterText(): string {
-	return "↑↓ move · Enter confirm · A add · P pin/unpin · Esc back";
+	return "Enter confirm · A add · P pin/unpin · Esc back";
 }
 
 export function getAddFooterText(loading = false): string {
@@ -54,10 +54,10 @@ export function getAddFooterText(loading = false): string {
 export function getPackageFooterText(mode: BrowserMode, selectedEntry?: PackageGroupEntry): string {
 	if (mode === "packageGroups") {
 		return selectedEntry?.kind === "item"
-			? "Type to search · ↑↓ move · Space toggle · A add · P pin/unpin · Enter details · Esc back"
-			: "Type to search · ↑↓ move · A add · Enter open full list · Esc back";
+			? "Type to search · Space toggle · A add · P pin/unpin · Enter details · Esc back"
+			: "Type to search · A add · Enter open full list · Esc back";
 	}
-	return "Type to search · ↑↓ move · Enter details · Space toggle · A add · P pin/unpin · Esc back";
+	return "Type to search · Enter details · Space toggle · A add · P pin/unpin · Esc back";
 }
 
 export function getEmptyPackageCategoryMessage(category: PackageContentCategory, hasSearchQuery: boolean): string {
