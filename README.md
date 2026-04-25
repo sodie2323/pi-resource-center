@@ -61,7 +61,7 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - Update remote packages directly from the browser
 - Argument completions for `/resource` subcommands
 - Built-in settings UI (`Shift+S`) with persistent preferences
-- External skill source management for Claude, Codex, OpenCode, and multiple custom directories
+- External skill source management for Claude, Codex, Codex Plugins, OpenCode, and multiple custom directories
 - Inline integrations editing with keyboard shortcuts for add/remove and quick on/off toggling
 - Add view defaults scope from the current context and offers inline source suggestions for local paths, npm, git, and GitHub URLs
 - Add and update operations show a live status widget above the editor while work is in progress
@@ -331,7 +331,7 @@ The package discovers resources in both **project** and **user** scope.
   - `skills/`
   - `prompts/`
   - `themes/`
-- external skill source directories configured in Resource Center settings (Claude/Codex/OpenCode/custom)
+- external skill source directories configured in Resource Center settings (Claude/Codex/Codex Plugins/OpenCode/custom)
 
 ### Package sources
 
@@ -346,7 +346,7 @@ By default, `extensions`, `skills`, and `prompts` focus on top-level resources. 
 
 From a package-contained extension, skill, or prompt detail view, you can explicitly show or hide that resource in its top-level category. Exposed package resources keep a package marker so their origin stays visible.
 
-Enabled external skill sources are synchronized into Pi core `settings.json` `skills` entries so Pi handles directory discovery and per-skill disable rules consistently.
+Enabled external skill sources are synchronized into Pi core `settings.json` `skills` entries so Pi handles directory discovery and per-skill disable rules consistently. The Codex Plugins integration scans `~/.codex/plugins` recursively for `.codex-plugin/plugin.json` manifests and only syncs plugin skill directories from plugins that do not declare `apps`, because app-backed plugins may require Codex/OpenAI connector runtime that Pi cannot provide.
 
 Themes are the exception: package-provided themes are still surfaced in the `themes` category by default so they remain easy to discover and apply.
 

@@ -21,6 +21,7 @@ export interface ExternalSkillSourceSetting {
 	label: string;
 	path: string;
 	enabled: boolean;
+	integration?: "skill-root" | "codex-plugin-cache";
 }
 
 export interface SettingsShape {
@@ -66,9 +67,10 @@ export interface ResourceCenterSettingsFile extends ResourceCenterSettings {
 }
 
 export const DEFAULT_EXTERNAL_SKILL_SOURCES: ExternalSkillSourceSetting[] = [
-	{ id: "claude", label: "Claude", path: "~/.claude/skills", enabled: false },
-	{ id: "codex", label: "Codex", path: "~/.codex/skills", enabled: false },
-	{ id: "opencode", label: "OpenCode", path: "~/.config/opencode/skills", enabled: false },
+	{ id: "claude", label: "Claude", path: "~/.claude/skills", enabled: false, integration: "skill-root" },
+	{ id: "codex", label: "Codex", path: "~/.codex/skills", enabled: false, integration: "skill-root" },
+	{ id: "codex-plugins", label: "Codex Plugins", path: "~/.codex/plugins", enabled: false, integration: "codex-plugin-cache" },
+	{ id: "opencode", label: "OpenCode", path: "~/.config/opencode/skills", enabled: false, integration: "skill-root" },
 ];
 
 export const DEFAULT_RESOURCE_CENTER_SETTINGS: ResourceCenterSettings = {

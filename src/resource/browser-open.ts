@@ -18,12 +18,13 @@ import {
 } from "./messages.js";
 import { addResourceFromInput, reloadAfterSettingsChange } from "./commands.js";
 import { detectAddTarget } from "./add-detect.js";
-import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, syncExternalSkillSourcesToPiSettings, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
 export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
-	const resources = await discoverResources(ctx.cwd);
 	const resourceCenterSettings = await readResourceCenterSettings();
+	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources);
+	const resources = await discoverResources(ctx.cwd);
 	let currentResourceCenterSettings = resourceCenterSettings;
 	let hasPendingChanges = false;
 

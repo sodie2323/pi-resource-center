@@ -18,6 +18,7 @@ import {
 	getUserSettingsPath,
 	readResourceCenterSettings,
 	readSettingsFile,
+	syncExternalSkillSourcesToPiSettings,
 	resolveHomePath,
 	DEFAULT_EXTERNAL_SKILL_SOURCES,
 	syncPrunedExposedResources,
@@ -55,6 +56,8 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 		skillDescriptionByPath: new Map(),
 		promptMetadataByPath: new Map(),
 	};
+	const resourceCenterSettings = await readResourceCenterSettings();
+	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources);
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
 	const resolvedPaths = await packageManager.resolve();
@@ -67,7 +70,6 @@ export async function discoverResources(cwd: string): Promise<ResourceIndex> {
 	const packageInstallPaths = buildPackageInstallPathMap(resolvedPaths);
 	const packageVersions = await buildPackageVersionMap(resolvedPaths, packageInstallPaths, caches);
 	const exposedResources = await getExposedResources(cwd);
-	const resourceCenterSettings = await readResourceCenterSettings();
 	const userSettingsFile = await readSettingsFile(getUserSettingsPath());
 	const [projectPackages, userPackages] = await Promise.all([
 		buildPackageItems(
@@ -267,12 +269,13 @@ async function discoverExternalSkillResources(
 	const items: FileResourceItem[] = [];
 	for (const source of sources) {
 		if (!source.enabled) continue;
-		const rootPath = resolveHomePath(source.path);
-		const skillPaths = await collectSkillPaths(rootPath);
-		for (const skillPath of skillPaths) {
+		const discoveredSkills = await discoverExternalSkillSourceSkills(source);
+		for (const discoveredSkill of discoveredSkills) {
+			const skillPath = discoveredSkill.path;
 			const normalizedSkillPath = normalizeConfigPath(skillPath);
 			if (existingPaths.has(normalizedSkillPath)) continue;
 			existingPaths.add(normalizedSkillPath);
+			const sourceLabel = discoveredSkill.sourceLabel ?? source.label;
 			items.push({
 				category: "skills" as const,
 				id: `skills:user:plugin:${source.id}:${skillPath}`,
@@ -280,8 +283,8 @@ async function discoverExternalSkillResources(
 				scope: "user",
 				path: skillPath,
 				source: "plugin",
-				sourceLabel: source.label,
-				description: await readSkillDescription(skillPath, caches) ?? `Skill resource in user scope, provided by external source ${source.label}. Path: ${skillPath}`,
+				sourceLabel,
+				description: await readSkillDescription(skillPath, caches) ?? discoveredSkill.description ?? `Skill resource in user scope, provided by external source ${sourceLabel}. Path: ${skillPath}`,
 				enabled: getPathResourceEnabledState(userSettings, "skills", skillPath) ?? true,
 				updatedAt: await safeMtimeMs(skillPath, caches),
 				managedByPluginSettings: true,
@@ -292,6 +295,97 @@ async function discoverExternalSkillResources(
 	return items;
 }
 
+async function discoverExternalSkillSourceSkills(source: ExternalSkillSourceSetting): Promise<Array<{ path: string; sourceLabel?: string; description?: string }>> {
+	if (source.integration !== "codex-plugin-cache" && source.id !== "codex-plugins") {
+		return (await collectSkillPaths(resolveHomePath(source.path))).map((path) => ({ path }));
+	}
+	return discoverCodexPluginSkills(resolveHomePath(source.path), source.label);
+}
+
+async function discoverCodexPluginSkills(cacheRoot: string, sourceLabel: string): Promise<Array<{ path: string; sourceLabel?: string; description?: string }>> {
+	const pluginJsonPaths = await collectCodexPluginManifests(cacheRoot);
+	const skills: Array<{ path: string; sourceLabel?: string; description?: string }> = [];
+	for (const pluginJsonPath of pluginJsonPaths) {
+		const plugin = await readCodexPluginManifest(pluginJsonPath);
+		if (!plugin || plugin.hasApps) continue;
+		const pluginRoot = dirname(dirname(pluginJsonPath));
+		const skillsRoot = resolve(pluginRoot, plugin.skillsPath ?? "skills");
+		const pluginLabel = plugin.displayName || plugin.name || basename(pluginRoot);
+		const label = `${sourceLabel}: ${pluginLabel}`;
+		for (const path of await collectSkillPaths(skillsRoot)) {
+			skills.push({
+				path,
+				sourceLabel: label,
+				description: plugin.shortDescription || plugin.description
+					? `Codex plugin skill from ${pluginLabel}. ${plugin.shortDescription ?? plugin.description}`
+					: `Codex plugin skill from ${pluginLabel}.`,
+			});
+		}
+	}
+	return skills;
+}
+
+async function collectCodexPluginManifests(root: string): Promise<string[]> {
+	const manifests: string[] = [];
+	await walkDirectory(root, async (path, isDirectory) => {
+		if (!isDirectory) return false;
+		if (!path.endsWith(".codex-plugin")) return undefined;
+		const pluginJsonPath = resolve(path, "plugin.json");
+		try {
+			const info = await stat(pluginJsonPath);
+			if (info.isFile()) manifests.push(pluginJsonPath);
+		} catch {
+			// ignore malformed plugin folders
+		}
+		return false;
+	});
+	return manifests;
+}
+
+async function walkDirectory(root: string, visit: (path: string, isDirectory: boolean) => Promise<boolean | void>): Promise<void> {
+	let entries: Awaited<ReturnType<typeof readdir>>;
+	try {
+		entries = await readdir(root, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		const entryPath = resolve(root, entry.name);
+		const shouldContinue = await visit(entryPath, entry.isDirectory());
+		if (entry.isDirectory() && shouldContinue !== false) await walkDirectory(entryPath, visit);
+	}
+}
+
+async function readCodexPluginManifest(path: string): Promise<{
+	name?: string;
+	displayName?: string;
+	description?: string;
+	shortDescription?: string;
+	skillsPath?: string;
+	hasApps: boolean;
+} | undefined> {
+	try {
+		const raw = await readFile(path, "utf8");
+		const parsed = JSON.parse(raw) as {
+			name?: unknown;
+			description?: unknown;
+			skills?: unknown;
+			apps?: unknown;
+			interface?: { displayName?: unknown; shortDescription?: unknown };
+		};
+		return {
+			name: typeof parsed.name === "string" ? parsed.name : undefined,
+			displayName: typeof parsed.interface?.displayName === "string" ? parsed.interface.displayName : undefined,
+			description: typeof parsed.description === "string" ? parsed.description : undefined,
+			shortDescription: typeof parsed.interface?.shortDescription === "string" ? parsed.interface.shortDescription : undefined,
+			skillsPath: typeof parsed.skills === "string" && parsed.skills.trim() ? parsed.skills : undefined,
+			hasApps: parsed.apps !== undefined,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 async function collectSkillPaths(path: string): Promise<string[]> {
 	try {
 		const info = await stat(path);
@@ -300,14 +394,14 @@ async function collectSkillPaths(path: string): Promise<string[]> {
 		}
 		if (!info.isDirectory()) return [];
 		const found = new Set<string>();
-		await walkSkillDirectory(path, found);
+		await walkSkillDirectory(path, found, true);
 		return Array.from(found);
 	} catch {
 		return [];
 	}
 }
 
-async function walkSkillDirectory(dir: string, found: Set<string>): Promise<void> {
+async function walkSkillDirectory(dir: string, found: Set<string>, includeRootFiles: boolean): Promise<void> {
 	let entries: Awaited<ReturnType<typeof readdir>>;
 	try {
 		entries = await readdir(dir, { withFileTypes: true });
@@ -316,15 +410,23 @@ async function walkSkillDirectory(dir: string, found: Set<string>): Promise<void
 	}
 
 	for (const entry of entries) {
+		if (entry.name === "SKILL.md") {
+			const entryPath = resolve(dir, entry.name);
+			if (entry.isFile()) found.add(entryPath);
+			return;
+		}
+	}
+
+	for (const entry of entries) {
+		if (entry.name.startsWith(".")) continue;
+		if (entry.name === "node_modules") continue;
 		const entryPath = resolve(dir, entry.name);
 		if (entry.isDirectory()) {
-			await walkSkillDirectory(entryPath, found);
+			await walkSkillDirectory(entryPath, found, false);
 			continue;
 		}
 		if (!entry.isFile()) continue;
-		if (entry.name === "SKILL.md") {
-			found.add(entryPath);
-		}
+		if (includeRootFiles && entry.name.endsWith(".md")) found.add(entryPath);
 	}
 }
 
