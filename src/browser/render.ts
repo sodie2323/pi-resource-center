@@ -1,7 +1,7 @@
 /**
  * 浏览器各页面的纯渲染函数。
  */
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { BrowserListEntry, BrowserTheme, DetailAction, PackageContentCategory, PackageGroupEntry, SettingsSection } from "./shared.js";
 import { CATEGORY_LABELS, CATEGORY_ORDER, SETTINGS_SECTION_LABELS, SETTINGS_SECTION_ORDER, formatResourceSourceLabel } from "./shared.js";
 import { canExposeResource, isContainedResource, isPackageItem } from "../resource/capabilities.js";

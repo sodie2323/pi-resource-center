@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.5] - 2026-05-08
+
+### Changed
+- Updated Pi peer dependencies, extension imports, and documentation links for Pi's move to the `@earendil-works/*` package scope.
+
 ## [0.2.4] - 2026-04-25
 
 ### Added

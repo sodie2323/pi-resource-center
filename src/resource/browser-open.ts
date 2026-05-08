@@ -1,7 +1,7 @@
 /**
  * 负责打开资源浏览器，并把浏览器动作连接到实际资源变更逻辑。
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ResourceBrowser } from "../browser/browser.js";
 import { discoverResources } from "./discovery.js";
 import { canRemoveResourceIndividually, isPackageItem, isThemeItem, supportsPackageUpdate } from "./capabilities.js";

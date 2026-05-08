@@ -1,4 +1,4 @@
-import { type Input, type Theme, getKeybindings, truncateToWidth } from "@mariozechner/pi-tui";
+import { type Input, type Theme, getKeybindings, truncateToWidth } from "@earendil-works/pi-tui";
 import { detectAddTargetSync, type AddPathCategory, type AddTarget } from "../resource/add-detect.js";
 import { getAddSuggestions, type AddSuggestion } from "./add-suggestions.js";
 import { moveSelection } from "./navigation.js";

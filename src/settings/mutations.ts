@@ -3,7 +3,7 @@
  */
 import { lstat, unlink } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
-import { SettingsManager } from "@mariozechner/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { FileResourceItem, ResourceCategory, ResourceItem } from "../types.js";
 import type { AddPathCategory } from "../resource/add-detect.js";
 import {

@@ -10,7 +10,7 @@ import {
 	type PathMetadata,
 	type ResolvedPaths,
 	type ResolvedResource,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	getExposedResources,
 	isPackageSourceEnabled,

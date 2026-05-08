@@ -1,13 +1,13 @@
 # pi-resource-center
 
 [![npm version](https://img.shields.io/npm/v/pi-resource-center.svg)](https://www.npmjs.com/package/pi-resource-center)
-[![Version](https://img.shields.io/badge/version-0.2.4-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
+[![Version](https://img.shields.io/badge/version-0.2.5-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-center)
 
 > Questions, feedback, or bug reports? [Join the discussion on Discord](https://discord.com/channels/1456806362351669492/1489814646679666821).
 
-A `pi-package` for [Pi](https://github.com/mariozechner/pi-coding-agent) that adds a `/resource` command and TUI for browsing, discovering, and managing:
+A `pi-package` for [Pi](https://github.com/earendil-works/pi-mono) that adds a `/resource` command and TUI for browsing, discovering, and managing:
 
 - packages
 - skills
@@ -362,8 +362,8 @@ Supported remote source prefixes:
 
 Peer dependencies:
 
-- `@mariozechner/pi-coding-agent`
-- `@mariozechner/pi-tui`
+- `@earendil-works/pi-coding-agent`
+- `@earendil-works/pi-tui`
 
 ## Notes
 

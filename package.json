@@ -1,6 +1,6 @@
 {
 	"name": "pi-resource-center",
-	"version": "0.2.4",
+	"version": "0.2.5",
 	"description": "Pi package for browsing packages, skills, extensions, prompts, and themes",
 	"type": "module",
 	"files": ["extensions", "src", "README.md"],
@@ -17,8 +17,8 @@
 		"extensions": ["./extensions"]
 	},
 	"peerDependencies": {
-		"@mariozechner/pi-coding-agent": "*",
-		"@mariozechner/pi-tui": "*"
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	},
 	"license": "MIT"
 }

@@ -1,7 +1,7 @@
 /**
  * 按浏览器 mode 处理键盘输入，负责把输入映射为导航和动作调用。
  */
-import { getKeybindings, type Input, type SettingsList } from "@mariozechner/pi-tui";
+import { getKeybindings, type Input, type SettingsList } from "@earendil-works/pi-tui";
 import { getDetailActions } from "./actions.js";
 import { moveSelection } from "./navigation.js";
 import { canExposeResource, canManagePackageContents, isPackageItem, supportsPackageUpdate } from "../resource/capabilities.js";

@@ -1,7 +1,7 @@
 /**
  * /resource 子命令处理逻辑。
  */
-import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { discoverResources } from "./discovery.js";
 import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isThemeItem } from "./capabilities.js";
 import { getResourceSearchCandidates } from "./identity.js";

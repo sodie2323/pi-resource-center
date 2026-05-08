@@ -1,7 +1,7 @@
 /**
  * 插件主入口：注册 /resource 命令并分发子命令。
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { discoverResources } from "./resource/discovery.js";
 import { openResourceBrowser } from "./resource/browser-open.js";
 import { ResourceCompletionProvider } from "./resource/completions.js";

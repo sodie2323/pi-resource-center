@@ -2,7 +2,7 @@
  * browser 子模块共享的常量、类型和辅助函数。
  */
 import { basename } from "node:path";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AddPathCategory } from "../resource/add-detect.js";
 import type { ResourceCenterSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem, ResourceScope } from "../types.js";

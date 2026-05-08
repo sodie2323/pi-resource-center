@@ -1,7 +1,7 @@
 /**
  * 资源浏览器核心状态容器：负责协调 UI 状态、渲染适配、缓存与回调。
  */
-import { getSettingsListTheme, type Theme } from "@mariozechner/pi-coding-agent";
+import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_EXTERNAL_SKILL_SOURCES, type ResourceCenterSettings } from "../settings.js";
 import {
 	type Component,
@@ -14,7 +14,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import {
 	CATEGORY_LABELS,
 	CATEGORY_ORDER,
