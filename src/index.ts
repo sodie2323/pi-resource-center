@@ -58,7 +58,7 @@ async function handleResourceCommand(args: string, ctx: ExtensionCommandContext,
 
 	const refresh = () => completions.refresh(ctx.cwd);
 	if (subcommand === "add") {
-		await handleAddCommand(sliceCommandArgs(args, subcommand), ctx, refresh);
+		await handleAddCommand(sliceCommandArgs(args, subcommand), ctx, pi, refresh);
 		return;
 	}
 	if (subcommand === "remove") {

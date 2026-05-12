@@ -1,7 +1,7 @@
 /**
  * /resource 子命令处理逻辑。
  */
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { discoverResources } from "./discovery.js";
 import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isThemeItem } from "./capabilities.js";
 import { getResourceSearchCandidates } from "./identity.js";
@@ -15,12 +15,14 @@ import {
 import { addPackageToSettings, addPathResourceToSettings, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import { normalizeCategoryAlias } from "./completions.js";
 import { detectAddTarget, getAddTargetSuccessLabel, type AddPathCategory } from "./add-detect.js";
+import { buildSuccessOperationMessage } from "./operation-status.js";
 import type { ReloadBehavior } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
 export async function handleAddCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
+	pi: ExtensionAPI,
 	refreshCompletions: () => Promise<void>,
 ): Promise<void> {
 	const parts = args.split(/\s+/).filter(Boolean);
@@ -45,9 +47,9 @@ export async function handleAddCommand(
 		return;
 	}
 	try {
-		const message = await addResourceFromInput(ctx.cwd, parts[0]!, scope, preferredCategory);
+		const result = await addResourceFromInput(ctx.cwd, parts[0]!, scope, preferredCategory, pi, ctx.signal);
 		await refreshCompletions();
-		await reloadAfterSettingsChange(ctx, message);
+		await reloadAfterSettingsChange(ctx, result.message);
 		return;
 	} catch (error: unknown) {
 		const detail = error instanceof Error ? error.message : String(error);
@@ -177,21 +179,45 @@ export async function handleExposureCommand(
 	ctx.ui.notify(getExposeSuccessMessage(item, exposed, statePath), "info");
 }
 
+export interface AddResourceResult {
+	message: string;
+	settingsPath: string;
+	target: Extract<Awaited<ReturnType<typeof detectAddTarget>>, { kind: "package" | "path" }>;
+	installOutput?: string;
+}
+
 export async function addResourceFromInput(
 	cwd: string,
 	input: string,
 	scope: "project" | "user" = "project",
 	preferredCategory?: AddPathCategory,
-): Promise<string> {
+	pi?: ExtensionAPI,
+	signal?: AbortSignal,
+): Promise<AddResourceResult> {
 	const target = await detectAddTarget(input, cwd, { preferredCategory });
 	if (target.kind === "invalid") throw new Error(target.reason);
 	if (target.kind === "ambiguous") {
 		throw new Error(`Couldn't infer resource type for ${target.path}. Choose one of: ${target.candidates.join(", ")}`);
 	}
+	let installOutput: string | undefined;
+	if (target.kind === "package" && pi) installOutput = await installPackageBeforePersisting(target.source, scope, pi, signal);
 	const settingsPath = target.kind === "package"
 		? await addPackageToSettings(cwd, target.source, scope)
 		: await addPathResourceToSettings(cwd, target.category, target.path, scope);
-	return `Added ${getAddTargetSuccessLabel(target)} · ${settingsPath}`;
+	const message = target.kind === "package" && installOutput !== undefined
+		? buildSuccessOperationMessage("Added package", target.source, installOutput)
+		: `Added ${getAddTargetSuccessLabel(target)} · ${settingsPath}`;
+	return { message, settingsPath, target, installOutput };
+}
+
+async function installPackageBeforePersisting(source: string, scope: "project" | "user", pi: ExtensionAPI, signal?: AbortSignal): Promise<string> {
+	const cliEntry = process.argv[1];
+	if (!cliEntry) throw new Error("Couldn't determine the pi CLI entrypoint");
+	const installArgs = [cliEntry, "install", source, ...(scope === "project" ? ["-l"] : [])];
+	const result = await pi.exec(process.execPath, installArgs, { signal });
+	const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+	if (result.code !== 0) throw new Error(output || `Failed to install package ${source}`);
+	return output;
 }
 
 export async function reloadAfterSettingsChange(ctx: ExtensionCommandContext, message: string, reloadBehavior?: ReloadBehavior): Promise<void> {

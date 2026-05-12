@@ -19,10 +19,19 @@ export function summarizeCliOutput(output: string): string | undefined {
 	return preferred.replace(/\s+/g, " ").trim();
 }
 
+type OperationKind = "add" | "update";
+type OperationToken = string;
+
+type OperationEntry = {
+	kind: OperationKind;
+	text: string;
+};
+
 export class ResourceOperationStatusController {
 	private spinner: ReturnType<typeof setInterval> | undefined;
-	private text: string | undefined;
 	private frameIndex = 0;
+	private nextOperationId = 1;
+	private readonly activeOperations = new Map<OperationToken, OperationEntry>();
 
 	constructor(
 		private readonly ui: ExtensionCommandContext["ui"],
@@ -31,44 +40,48 @@ export class ResourceOperationStatusController {
 			hasLoadingState: () => boolean;
 			onTick: () => void;
 			requestRender: () => void;
-			stopBrowserLoadingState: () => void;
+			stopBrowserLoadingState: (operation?: OperationKind) => void;
 		},
 	) {}
 
-	public start(text: string): void {
-		this.text = text;
+	public start(operation: OperationKind, text: string): OperationToken {
+		const token = `${operation}:${this.nextOperationId++}`;
+		this.activeOperations.set(token, { kind: operation, text });
 		this.frameIndex = 0;
 		this.setWidget();
-		if (this.spinner) return;
-		this.spinner = setInterval(() => {
-			if (!this.text && !this.callbacks.hasLoadingState()) {
-				this.stopInterval();
-				this.clearWidget();
-				return;
-			}
-			this.frameIndex += 1;
-			this.callbacks.onTick();
-			if (this.text) this.setWidget();
-			this.callbacks.requestRender();
-		}, 100);
+		if (!this.spinner) {
+			this.spinner = setInterval(() => {
+				if (this.activeOperations.size === 0 && !this.callbacks.hasLoadingState()) {
+					this.stopInterval();
+					this.clearWidget();
+					return;
+				}
+				this.frameIndex += 1;
+				this.callbacks.onTick();
+				this.setWidget();
+				this.callbacks.requestRender();
+			}, 100);
+		}
+		return token;
 	}
 
-	public stop(): void {
-		this.callbacks.stopBrowserLoadingState();
-		this.text = undefined;
-		this.clearWidget();
-		if (!this.callbacks.hasLoadingState()) this.stopInterval();
+	public stop(token?: OperationToken): void {
+		const entry = token ? this.activeOperations.get(token) : undefined;
+		if (token) this.activeOperations.delete(token); else this.activeOperations.clear();
+		this.callbacks.stopBrowserLoadingState(entry?.kind);
+		if (this.activeOperations.size > 0) this.setWidget(); else this.clearWidget();
+		if (this.activeOperations.size === 0 && !this.callbacks.hasLoadingState()) this.stopInterval();
 	}
 
 	public dispose(): void {
-		this.text = undefined;
+		this.activeOperations.clear();
 		this.clearWidget();
 		this.stopInterval();
 	}
 
 	private setWidget(): void {
-		if (!this.text) return;
-		this.ui.setWidget("resource-op", [this.renderText()], { placement: "aboveEditor" });
+		if (this.activeOperations.size === 0) return;
+		this.ui.setWidget("resource-op", this.renderLines(), { placement: "aboveEditor" });
 	}
 
 	private clearWidget(): void {
@@ -81,8 +94,8 @@ export class ResourceOperationStatusController {
 		this.spinner = undefined;
 	}
 
-	private renderText(): string {
+	private renderLines(): string[] {
 		const frame = SPINNER_FRAMES[this.frameIndex % SPINNER_FRAMES.length]!;
-		return `${this.theme.fg("accent", frame)} ${this.theme.fg("dim", this.text ?? "")}`;
+		return Array.from(this.activeOperations.values()).map((entry) => `${this.theme.fg("accent", frame)} ${this.theme.fg("dim", entry.text)}`);
 	}
 }

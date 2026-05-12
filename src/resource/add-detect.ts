@@ -73,8 +73,19 @@ export function getAddTargetSuccessLabel(target: Extract<AddTarget, { kind: "pac
 	return `local ${CATEGORY_LABELS[target.category]} ${basename(target.path)}`;
 }
 
-function isRemotePackageSource(value: string): boolean {
-	return REMOTE_PROTOCOL_PREFIXES.some((prefix) => value.startsWith(prefix));
+function getRemotePackageSourceValidationError(value: string): string | undefined {
+	if (value.startsWith("npm:")) return getNpmPackageSourceValidationError(value);
+	return undefined;
+}
+
+function getNpmPackageSourceValidationError(source: string): string | undefined {
+	const spec = source.slice("npm:".length).trim();
+	if (!spec) return "Enter an npm package name after npm:.";
+	if (spec.startsWith("npm:")) return `Invalid npm package source: ${source}. Did you mean npm:${spec.slice("npm:".length)}?`;
+	if (/\s/.test(spec)) return `Invalid npm package source: ${source}. Package specs cannot contain whitespace.`;
+	const match = spec.match(/^(?<name>@[^@/\s]+\/[^@/\s]+|[^@/\s]+)(?:@(?<version>.+))?$/);
+	if (!match?.groups?.name) return `Invalid npm package source: ${source}. Use npm:<package> or npm:<package>@<version>.`;
+	return undefined;
 }
 
 function resolveLocalInput(value: string, cwd: string): string {
@@ -91,7 +102,9 @@ function prepareAddInput(
 	| { kind: "path"; trimmed: string; resolvedPath: string } {
 	const trimmed = input.trim();
 	if (!trimmed) return { kind: "result", result: { kind: "invalid", reason: "Enter a package source or local path." } };
-	if (isRemotePackageSource(trimmed)) {
+	if (REMOTE_PROTOCOL_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) {
+		const validationError = getRemotePackageSourceValidationError(trimmed);
+		if (validationError) return { kind: "result", result: { kind: "invalid", reason: validationError } };
 		if (options.preferredCategory) {
 			return { kind: "result", result: { kind: "invalid", reason: `Remote source ${trimmed} can only be added as a package.` } };
 		}

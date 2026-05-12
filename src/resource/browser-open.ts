@@ -17,9 +17,10 @@ import {
 	getToggleSuccessMessage,
 } from "./messages.js";
 import { addResourceFromInput, reloadAfterSettingsChange } from "./commands.js";
-import { detectAddTarget } from "./add-detect.js";
 import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, syncExternalSkillSourcesToPiSettings, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
+
+type OperationKind = "add" | "update";
 
 export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const resourceCenterSettings = await readResourceCenterSettings();
@@ -42,7 +43,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			hasLoadingState: () => browser.hasLoadingState(),
 			onTick: () => browser.advanceLoadingFrame(),
 			requestRender,
-			stopBrowserLoadingState: () => browser.stopActionLoading("update"),
+			stopBrowserLoadingState: (operation) => {
+				if (!operation || operation === "update") browser.stopActionLoading("update");
+				if (!operation || operation === "add") browser.stopAddLoading();
+			},
 		});
 		const setActionMessage = (action: "toggle" | "expose" | "update" | "remove", type: "info" | "warning" | "error", text: string) => {
 			browser.setActionMessage(action, type, text);
@@ -57,10 +61,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 		};
 		const startUpdateSpinner = (source: string) => {
-			operationStatus.stop();
+			const token = operationStatus.start("update", `Updating ${source}...`);
 			browser.startActionLoading("update", `Updating ${source}`);
 			requestRender();
-			operationStatus.start(`Updating ${source}...`);
+			return token;
 		};
 		const updatePackage = async (item: ResourceItem) => {
 			if (!isPackageItem(item)) {
@@ -76,10 +80,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				setActionMessage("update", "error", "Couldn't determine the pi CLI entrypoint");
 				return;
 			}
-			startUpdateSpinner(item.source);
+			const operationToken = startUpdateSpinner(item.source);
 			try {
 				const result = await pi.exec(process.execPath, [cliEntry, "update", item.source], { signal: ctx.signal });
-				operationStatus.stop();
+				operationStatus.stop(operationToken);
 				const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
 				if (result.code === 0) {
 					hasPendingChanges = true;
@@ -94,7 +98,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					ctx.ui.notify(message, "warning");
 				}
 			} catch (error: unknown) {
-				operationStatus.stop();
+				operationStatus.stop(operationToken);
 				const message = error instanceof Error ? error.message : String(error);
 				setActionMessage("update", "error", `Failed to update package: ${message}`);
 				ctx.ui.notify(`Failed to update package: ${message}`, "warning");
@@ -172,33 +176,17 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			}
 		};
 		const addResource = async (request: { input: string; scope: "project" | "user"; preferredCategory?: import("./add-detect.js").AddPathCategory }): Promise<void> => {
-			operationStatus.start(`Adding ${request.input}...`);
+			const operationToken = operationStatus.start("add", `Adding ${request.input}...`);
 			try {
-				const target = await detectAddTarget(request.input, ctx.cwd, { preferredCategory: request.preferredCategory });
-				if (target.kind === "invalid") throw new Error(target.reason);
-				if (target.kind === "ambiguous") {
-					throw new Error(`Couldn't infer resource type for ${target.path}. Choose one of: ${target.candidates.join(", ")}`);
-				}
-				let message: string;
-				if (target.kind === "package") {
-					const cliEntry = process.argv[1];
-					if (!cliEntry) throw new Error("Couldn't determine the pi CLI entrypoint");
-					const installArgs = [cliEntry, "install", target.source, ...(request.scope === "project" ? ["-l"] : [])];
-					const result = await pi.exec(process.execPath, installArgs, { signal: ctx.signal });
-					const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-					if (result.code !== 0) throw new Error(output || `Failed to install package ${target.source}`);
-					message = buildSuccessOperationMessage("Added package", target.source, output);
-				} else {
-					message = await addResourceFromInput(ctx.cwd, request.input, request.scope, request.preferredCategory);
-				}
+				const result = await addResourceFromInput(ctx.cwd, request.input, request.scope, request.preferredCategory, pi, ctx.signal);
 				hasPendingChanges = true;
 				if (browserOpen) await refreshBrowser();
-				operationStatus.stop();
-				ctx.ui.notify(message, "info");
+				operationStatus.stop(operationToken);
+				ctx.ui.notify(result.message, "info");
 				if (browserOpen === false) await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error);
-				operationStatus.stop();
+				operationStatus.stop(operationToken);
 				ctx.ui.notify(message, "warning");
 				throw error;
 			}

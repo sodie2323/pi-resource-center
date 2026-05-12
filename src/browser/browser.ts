@@ -130,6 +130,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private loadingAction: DetailAction | undefined;
 	private loadingText: string | undefined;
 	private loadingFrame = 0;
+	private pendingAddRequests = 0;
 
 	private _focused = false;
 	get focused(): boolean {
@@ -703,6 +704,10 @@ export class ResourceBrowser implements Component, Focusable {
 		}
 	}
 
+	public stopAddLoading(): void {
+		this.addState = { ...this.addState, loading: this.pendingAddRequests > 0 };
+	}
+
 	private clearTransientActionMessage(): void {
 		if (!this.loadingAction) {
 			this.actionMessage = undefined;
@@ -1054,7 +1059,6 @@ export class ResourceBrowser implements Component, Focusable {
 			this.openSettings();
 			return;
 		}
-		if (this.addState.loading) return;
 		const navigated = handleAddModeNavigation(this.addState, data);
 		if (navigated !== this.addState) {
 			this.addState = navigated;
@@ -1093,16 +1097,19 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private async submitAddRequest(request: { input: string; scope: "project" | "user"; preferredCategory?: AddPathCategory }): Promise<void> {
+		this.pendingAddRequests += 1;
 		this.addState = { ...this.addState, loading: true };
 		this.loadingFrame = 0;
 		this.callbacks.onRequestRender?.();
 		try {
 			await this.callbacks.onAdd?.(request);
-			this.addState = { ...this.addState, loading: false };
-			if (this.mode === "add") this.closeAddMode();
+			this.pendingAddRequests = Math.max(0, this.pendingAddRequests - 1);
+			this.addState = { ...this.addState, loading: this.pendingAddRequests > 0 };
+			if (this.pendingAddRequests === 0 && this.mode === "add") this.closeAddMode();
 			this.callbacks.onRequestRender?.();
 		} catch {
-			this.addState = { ...this.addState, loading: false };
+			this.pendingAddRequests = Math.max(0, this.pendingAddRequests - 1);
+			this.addState = { ...this.addState, loading: this.pendingAddRequests > 0 };
 			this.callbacks.onRequestRender?.();
 		}
 	}
