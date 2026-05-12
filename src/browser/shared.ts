@@ -4,7 +4,7 @@
 import { basename } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AddPathCategory } from "../resource/add-detect.js";
-import type { ResourceCenterSettings } from "../settings.js";
+import type { ResourceCenterSettings, ResourceSortMode } from "../settings.js";
 import type { ResourceCategory, ResourceItem, ResourceScope } from "../types.js";
 
 export const CATEGORY_ORDER: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
@@ -33,11 +33,11 @@ export const SETTINGS_SECTION_LABELS: Record<SettingsSection, string> = {
 };
 
 export const SORT_MODE_LABELS: Record<ResourceCenterSettings["sortMode"], string> = {
-	updated: "Recently updated (newest first)",
-	default: "As discovered (no re-sorting)",
-	name: "Name (A → Z)",
-	enabled: "Enabled first",
-	scope: "Scope: Project → User",
+	updated: "Recent",
+	default: "Default",
+	name: "Name",
+	enabled: "Enabled",
+	scope: "Scope",
 };
 
 export const SORT_MODE_VALUES = Object.values(SORT_MODE_LABELS);

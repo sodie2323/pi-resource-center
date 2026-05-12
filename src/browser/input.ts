@@ -21,6 +21,7 @@ export function handleListInput(data: string, args: {
 	onToggleItem: (item: ResourceItem) => void;
 	onToggleGroup?: (items: ResourceItem[], enabled: boolean, label: string) => void;
 	onAddResource?: () => void;
+	onCycleSortMode: () => void;
 	searchInput: Input;
 	onApplyFilter: () => void;
 }): void {
@@ -28,7 +29,8 @@ export function handleListInput(data: string, args: {
 	if (data === "S") return args.onOpenSettings();
 	if (kb.matches(data, "tui.select.cancel")) return void args.onClose();
 	if (kb.matches(data, "tui.editor.cursorLeft")) return args.onMoveCategory(-1);
-	if (kb.matches(data, "tui.editor.cursorRight") || kb.matches(data, "tui.input.tab")) return args.onMoveCategory(1);
+	if (kb.matches(data, "tui.editor.cursorRight")) return args.onMoveCategory(1);
+	if (kb.matches(data, "tui.input.tab")) return args.onCycleSortMode();
 	if (kb.matches(data, "tui.select.up")) return args.onMoveSelection(-1);
 	if (kb.matches(data, "tui.select.down")) return args.onMoveSelection(1);
 	if (kb.matches(data, "tui.select.pageUp")) return args.onMoveSelection(-args.maxVisible);

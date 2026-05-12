@@ -24,6 +24,7 @@ import {
 	SETTINGS_SECTION_ORDER,
 	SORT_MODE_LABELS,
 	SORT_MODE_VALUES,
+	type ResourceSortMode,
 	reloadBehaviorFromLabel,
 	sortModeFromLabel,
 	type BrowserCallbacks,
@@ -247,6 +248,7 @@ export class ResourceBrowser implements Component, Focusable {
 			onToggleItem: (item) => this.toggleItem(item),
 			onToggleGroup: (items, enabled, label) => this.togglePluginGroup(items, enabled, label),
 			onAddResource: () => this.openAddMode(),
+			onCycleSortMode: () => this.cycleSortMode(),
 			searchInput: this.mainSearchInput,
 			onApplyFilter: () => this.applyFilter(),
 		});
@@ -327,7 +329,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private renderTabs(width: number): string[] {
-		return renderTabsView(this.theme, width, this.category);
+		return renderTabsView(this.theme, width, this.category, this.settings.sortMode);
 	}
 
 	private renderSearch(width: number): string[] {
@@ -831,6 +833,16 @@ export class ResourceBrowser implements Component, Focusable {
 		const next = (index + direction + CATEGORY_ORDER.length) % CATEGORY_ORDER.length;
 		this.category = CATEGORY_ORDER[next]!;
 		this.mainSearchInput.setValue("");
+		this.applyFilter();
+	}
+
+	private cycleSortMode(): void {
+		const modes = Object.keys(SORT_MODE_LABELS) as ResourceSortMode[];
+		const index = modes.indexOf(this.settings.sortMode);
+		const nextMode = modes[(index + 1 + modes.length) % modes.length]!;
+		this.settings = { ...this.settings, sortMode: nextMode };
+		this.callbacks.onSettingsChange?.(this.settings);
+		this.invalidateVisibleCategoryCache(this.category);
 		this.applyFilter();
 	}
 

@@ -3,7 +3,7 @@
  */
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { BrowserListEntry, BrowserTheme, DetailAction, PackageContentCategory, PackageGroupEntry, SettingsSection } from "./shared.js";
-import { CATEGORY_LABELS, CATEGORY_ORDER, SETTINGS_SECTION_LABELS, SETTINGS_SECTION_ORDER, formatResourceSourceLabel } from "./shared.js";
+import { CATEGORY_LABELS, CATEGORY_ORDER, SETTINGS_SECTION_LABELS, SETTINGS_SECTION_ORDER, SORT_MODE_LABELS, formatResourceSourceLabel } from "./shared.js";
 import { canExposeResource, isContainedResource, isPackageItem } from "../resource/capabilities.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
@@ -14,8 +14,9 @@ export function renderHeader(theme: BrowserTheme, width: number, title: string, 
 	return [truncateToWidth(`${left}${" ".repeat(spacing)}${right}`, width, "")];
 }
 
-export function renderTabs(theme: BrowserTheme, width: number, category: ResourceCategory): string[] {
-	const title = theme.fg("muted", "(← → or Tab to cycle)");
+export function renderTabs(theme: BrowserTheme, width: number, category: ResourceCategory, sortMode?: keyof typeof SORT_MODE_LABELS): string[] {
+	const sortHint = sortMode ? SORT_MODE_LABELS[sortMode] : "Sort";
+	const title = theme.fg("muted", `←/→ category | Tab sort: ${sortHint}`);
 	const tabs = CATEGORY_ORDER.map((entry) => {
 		const label = ` ${CATEGORY_LABELS[entry]} `;
 		if (entry === category) {
