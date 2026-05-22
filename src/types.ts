@@ -52,6 +52,7 @@ export interface FileResourceItem {
 	externalSourceId?: string;
 	externalPluginId?: string;
 	externalPluginName?: string;
+	externalSkillId?: string;
 	/** Unix epoch millis for "last updated" sorting (best-effort). */
 	updatedAt?: number;
 	packageSource?: string;

@@ -56,6 +56,7 @@ export interface ResourceCenterSettings {
 	sortMode: ResourceSortMode;
 	reloadBehavior: ReloadBehavior;
 	pinned: string[];
+	disabledExternalSkills: string[];
 	packagePreviewLimit: 3 | 5 | 8;
 	searchIncludeDescription: boolean;
 	searchIncludePath: boolean;
@@ -80,6 +81,7 @@ export const DEFAULT_RESOURCE_CENTER_SETTINGS: ResourceCenterSettings = {
 	sortMode: "updated",
 	reloadBehavior: "notice",
 	pinned: [],
+	disabledExternalSkills: [],
 	packagePreviewLimit: 5,
 	searchIncludeDescription: true,
 	searchIncludePath: true,

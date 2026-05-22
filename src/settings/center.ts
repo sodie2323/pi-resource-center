@@ -80,6 +80,23 @@ export async function saveResourceCenterSettings(settings: ResourceCenterSetting
 	return savedPath;
 }
 
+export async function setExternalSkillEnabled(externalSkillId: string, enabled: boolean): Promise<string> {
+	const settingsPath = getResourceCenterSettingsPath();
+	try {
+		const file = await readResourceCenterSettingsFile();
+		const current = file.disabledExternalSkills ?? [];
+		const nextDisabled = enabled
+			? current.filter((id) => id !== externalSkillId)
+			: current.includes(externalSkillId)
+				? current
+				: [...current, externalSkillId];
+		await saveResourceCenterSettingsFile({ ...file, disabledExternalSkills: nextDisabled.length ? nextDisabled : [] });
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to ${enabled ? "enable" : "disable"} external skill ${externalSkillId} via ${settingsPath}: ${toErrorMessage(error)}`);
+	}
+}
+
 export async function getExposedResources(_cwd: string): Promise<ExposedResourceEntry[]> {
 	try {
 		const file = await readResourceCenterSettingsFile();

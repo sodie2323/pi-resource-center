@@ -17,7 +17,7 @@ import {
 	getToggleSuccessMessage,
 } from "./messages.js";
 import { addResourceFromInput, reloadAfterSettingsChange } from "./commands.js";
-import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setResourceExposed, syncExternalSkillSourcesToPiSettings, toggleResourceInSettings } from "../settings.js";
+import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setExternalSkillEnabled, setResourceExposed, syncExternalSkillSourcesToPiSettings, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
 type OperationKind = "add" | "update";
@@ -106,6 +106,13 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 		const toggleItem = async (item: ResourceItem) => {
 			try {
+				if ("externalSkillId" in item && item.externalSkillId) {
+					const statePath = await setExternalSkillEnabled(item.externalSkillId, item.enabled);
+					hasPendingChanges = true;
+					await refreshBrowser();
+					setActionMessage("toggle", "info", getToggleSuccessMessage(item, statePath));
+					return;
+				}
 				if (isThemeItem(item)) {
 					const settingsPath = await setActiveTheme(ctx.cwd, item.name, item.scope);
 					ctx.ui.setTheme(item.name);
@@ -130,7 +137,11 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				for (const item of items) {
 					if (item.enabled === enabled) continue;
 					item.enabled = enabled;
-					settingsPath = await toggleResourceInSettings(ctx.cwd, item);
+					if ("externalSkillId" in item && item.externalSkillId) {
+						settingsPath = await setExternalSkillEnabled(item.externalSkillId, enabled);
+					} else {
+						settingsPath = await toggleResourceInSettings(ctx.cwd, item);
+					}
 					changedCount += 1;
 				}
 				hasPendingChanges = true;
