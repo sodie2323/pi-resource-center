@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-05-23
+
+### Added
+- Added stable Codex plugin skill IDs derived from external source id, plugin name, and skill-relative path so disabled Codex plugin skills stay disabled across Codex cache or version path changes.
+- Added Resource Center-managed `disabledExternalSkills` state for stable external skill disable persistence.
+- Added multi-line operation status tracking so concurrent add/update operations each keep their own above-editor status line.
+
+### Changed
+- Unified the browser Add flow and `/resource add` command behind the same add implementation.
+- Remote package adds now run the Pi install flow before persisting package sources to settings, preventing missing npm packages from being saved.
+- `Tab` in the main browser list now cycles sort mode, while `Left/Right` continue to switch categories.
+- Shortened sort labels in the browser and settings UI to `Recent`, `Default`, `Name`, `Enabled`, and `Scope`.
+- The browser hint now shows `(←/→ category | Tab sort: <mode>)`.
+
+### Fixed
+- Rejected malformed npm package sources such as duplicated `npm:` prefixes before install or settings mutation.
+- Fixed add/update status widgets being overwritten or cleared by another concurrent operation.
+- Fixed repeated Add submissions so the add loading state remains active until all pending add requests finish.
+
 ## [0.2.5] - 2026-05-08
 
 ### Changed

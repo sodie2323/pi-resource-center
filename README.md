@@ -1,7 +1,7 @@
 # pi-resource-center
 
 [![npm version](https://img.shields.io/npm/v/pi-resource-center.svg)](https://www.npmjs.com/package/pi-resource-center)
-[![Version](https://img.shields.io/badge/version-0.2.5-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
+[![Version](https://img.shields.io/badge/version-0.2.6-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-center)
 
@@ -31,7 +31,7 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
   - [Open the browser](#open-the-browser)
   - [Re-run discovery](#re-run-discovery)
   - [Core command groups](#core-command-groups)
-  - [Add a package source](#add-a-package-source)
+  - [Add a package source or local resource](#add-a-package-source-or-local-resource)
   - [Enable, disable, remove, expose, or hide resources](#enable-disable-remove-expose-or-hide-resources)
 - [Theme behavior](#theme-behavior)
 - [TUI controls](#tui-controls)
@@ -57,15 +57,17 @@ It provides a keyboard-driven TUI resource browser, resource discovery across pr
 - Pin resources to keep them at the top of sorted lists
 - Apply built-in and custom themes from the browser or command line
 - Remove configured resources from settings
-- Add package sources and local resources via `/resource add ...`
+- Add package sources and local resources via `/resource add ...` or the browser Add view
+- Package adds validate source syntax and install successfully before writing settings
+- Add and update operations show a live multi-line status widget above the editor while work is in progress
 - Update remote packages directly from the browser
 - Argument completions for `/resource` subcommands
 - Built-in settings UI (`Shift+S`) with persistent preferences
 - External skill source management for Claude, Codex, Codex Plugins, OpenCode, and multiple custom directories
 - Codex plugin skills can be grouped by plugin in the Skills browser for cleaner navigation
+- Codex plugin skill disabled state is tracked by stable plugin/skill IDs so Codex cache or version path changes do not re-enable disabled skills
 - Inline integrations editing with keyboard shortcuts for add/remove and quick on/off toggling
 - Add view defaults scope from the current context and offers inline source suggestions for local paths, npm, git, and GitHub URLs
-- Add and update operations show a live status widget above the editor while work is in progress
 - Package lists and detail views display installed package versions
 - Source labels prefer configured external source names such as Codex or custom source labels when available
 - Local package sources use shorter `local:<name>` labels instead of full absolute paths in the browser
@@ -246,7 +248,8 @@ Examples:
 
 ### Browser view
 
-- `Left/Right` or `Tab` — switch categories
+- `Left/Right` — switch categories
+- `Tab` — cycle sort mode (`Recent`, `Default`, `Name`, `Enabled`, `Scope`)
 - `Up/Down` — move selection
 - `PageUp/PageDown` — jump through the list
 - `Enter` — open resource details
@@ -282,6 +285,7 @@ Open from browser or detail views with `A`.
 - `Up/Down` — choose a suggestion or disambiguation candidate
 - `Enter` — accept the selected suggestion or add the current source
 - Long-running add/install operations show a widget above the editor and continue even if you leave the Resource Center view
+- Multiple add/update operations can run at the same time; each operation keeps its own status line until it finishes
 - `Esc` — close the Add view
 
 ### Settings view
@@ -305,7 +309,7 @@ Resource Center stores its own UI preferences and "exposed" package resource sta
 - Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
 - macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
 
-This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, configured external skill sources, and the reload behavior used after settings changes.
+This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, stable disabled external skill IDs, configured external skill sources, and the reload behavior used after settings changes.
 
 Stale `pinned` and `exposedResources` entries are pruned automatically when the plugin refreshes and before settings are saved.
 
@@ -347,7 +351,9 @@ By default, `extensions`, `skills`, and `prompts` focus on top-level resources. 
 
 From a package-contained extension, skill, or prompt detail view, you can explicitly show or hide that resource in its top-level category. Exposed package resources keep a package marker so their origin stays visible.
 
-Enabled external skill sources are synchronized into Pi core `settings.json` `skills` entries so Pi handles directory discovery and per-skill disable rules consistently. Codex-owned skills use normalized source labels such as `codex:skills` for the main Codex skills root and `codex:<plugin-name>` for Codex plugin skills. The Codex Plugins integration scans `~/.codex/plugins` recursively for `.codex-plugin/plugin.json` manifests and only syncs plugin skill directories from plugins that do not declare `apps`, because app-backed plugins may require Codex/OpenAI connector runtime that Pi cannot provide. When a Codex plugin contributes multiple skills, the Skills browser groups them under the plugin so they can be expanded or toggled together.
+Enabled external skill sources are synchronized into Pi core `settings.json` `skills` entries so Pi handles directory discovery consistently. Codex-owned skills use normalized source labels such as `codex:skills` for the main Codex skills root and `codex:<plugin-name>` for Codex plugin skills. The Codex Plugins integration scans `~/.codex/plugins` recursively for `.codex-plugin/plugin.json` manifests and only syncs plugin skill directories from plugins that do not declare `apps`, because app-backed plugins may require Codex/OpenAI connector runtime that Pi cannot provide. When a Codex plugin contributes multiple skills, the Skills browser groups them under the plugin so they can be expanded or toggled together.
+
+Codex plugin skills also get stable Resource Center IDs derived from the external source id, plugin name, and skill-relative path. Disabled Codex plugin skills are stored in Resource Center settings by those stable IDs instead of Codex cache/runtime absolute paths, so Codex plugin version or cache directory changes do not re-enable previously disabled skills.
 
 Themes are the exception: package-provided themes are still surfaced in the `themes` category by default so they remain easy to discover and apply.
 
