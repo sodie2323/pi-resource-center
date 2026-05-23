@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2026-05-23
+
+### Changed
+- Lazily load Resource Center discovery, browser, command, and completion modules so Pi startup no longer eagerly imports the full resource browser graph.
+- Deferred completion cache refresh from session startup until Resource Center commands or completions are used.
+
 ## [0.2.6] - 2026-05-23
 
 ### Added

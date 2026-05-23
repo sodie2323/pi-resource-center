@@ -1,10 +1,21 @@
 {
 	"name": "pi-resource-center",
-	"version": "0.2.6",
+	"version": "0.2.7",
 	"description": "Pi package for browsing packages, skills, extensions, prompts, and themes",
 	"type": "module",
-	"files": ["extensions", "src", "README.md"],
-	"keywords": ["pi-package", "pi", "tui", "extensions", "themes", "resources"],
+	"files": [
+		"extensions",
+		"src",
+		"README.md"
+	],
+	"keywords": [
+		"pi-package",
+		"pi",
+		"tui",
+		"extensions",
+		"themes",
+		"resources"
+	],
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/sodie2323/pi-resource-center.git"
@@ -14,7 +25,9 @@
 		"url": "https://github.com/sodie2323/pi-resource-center/issues"
 	},
 	"pi": {
-		"extensions": ["./extensions"]
+		"extensions": [
+			"./extensions"
+		]
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
