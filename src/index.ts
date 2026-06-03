@@ -65,7 +65,7 @@ async function handleResourceCommand(args: string, ctx: ExtensionCommandContext,
 			import("./settings.js"),
 		]);
 		const settings = await readResourceCenterSettings();
-		await syncExternalSkillSourcesToPiSettings(settings.externalSkillSources, settings.externalSkillSources);
+		await syncExternalSkillSourcesToPiSettings(settings.externalSkillSources, settings.externalSkillSources, settings.disabledExternalSkills);
 		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
 		await completions.refresh(ctx.cwd);
 		const count = Object.values(resources.categories).reduce((sum, items) => sum + items.length, 0);

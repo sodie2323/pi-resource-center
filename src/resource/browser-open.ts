@@ -24,7 +24,7 @@ type OperationKind = "add" | "update";
 
 export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const resourceCenterSettings = await readResourceCenterSettings();
-	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources);
+	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources, resourceCenterSettings.disabledExternalSkills);
 	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
 	let currentResourceCenterSettings = resourceCenterSettings;
 	let hasPendingChanges = false;

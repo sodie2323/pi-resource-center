@@ -72,7 +72,7 @@ export async function discoverResources(cwd: string, currentTheme?: string): Pro
 		promptMetadataByPath: new Map(),
 	};
 	const resourceCenterSettings = await readResourceCenterSettings();
-	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources);
+	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources, resourceCenterSettings.disabledExternalSkills);
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
 	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
 	const resolvedPaths = await packageManager.resolve();
