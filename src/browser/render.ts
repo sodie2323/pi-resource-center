@@ -117,18 +117,11 @@ export function renderDetailPage(args: {
 	theme: BrowserTheme;
 	width: number;
 	item: ResourceItem | undefined;
-	settings: {
-		showSource: boolean;
-		showPath: boolean;
-		showPathInPackage: boolean;
-		};
-	isPinned: (item: ResourceItem) => boolean;
 	detailSelectedIndex: number;
 	getDetailActions: (item: ResourceItem) => DetailAction[];
 	getDetailActionLabel: (action: DetailAction, item: ResourceItem, selected: boolean) => string;
 	getPersistedActionHint: (action: DetailAction) => string | undefined;
 	getDetailActionHint: (action: DetailAction, item: ResourceItem) => string | undefined;
-	formatPackageEnabledStateText: (item: ResourceItem) => string;
 	formatPackageEnabledSummary: (item: ResourceItem) => string | undefined;
 	formatPackageCounts: (item: ResourceItem, detailed?: boolean, dimmed?: boolean) => string | undefined;
 }): string[] {
@@ -136,44 +129,19 @@ export function renderDetailPage(args: {
 		theme,
 		width,
 		item,
-		settings,
-		isPinned,
 		detailSelectedIndex,
 		getDetailActions,
 		getDetailActionLabel,
 		getPersistedActionHint,
 		getDetailActionHint,
-		formatPackageEnabledStateText,
 		formatPackageEnabledSummary,
 		formatPackageCounts,
 	} = args;
 	if (!item) return [theme.fg("muted", "Nothing selected")];
 
-	const enabledText = isPackageItem(item)
-		? formatPackageEnabledStateText(item)
-		: item.enabled
-			? theme.fg("success", "on")
-			: theme.fg("dim", "off");
-	const sourceText = formatResourceSourceLabel(item);
-	const pathText = isPackageItem(item) ? item.installPath : "path" in item ? item.path : undefined;
-	const pinnedText = isPinned(item) ? theme.fg("accent", "[pin]") : theme.fg("dim", "no");
-	const lines = [
-		truncateToWidth(`${theme.fg("muted", "Category")}: ${CATEGORY_LABELS[item.category]}`, width, "…"),
-		truncateToWidth(`${theme.fg("muted", "Enabled")}: ${enabledText}`, width, "…"),
-		truncateToWidth(`${theme.fg("muted", "Pinned")}: ${pinnedText}`, width, "…"),
-		truncateToWidth(`${theme.fg("muted", "Scope")}: ${item.scope}`, width, "…"),
-		truncateToWidth(`${theme.fg("muted", "Name")}: ${isPackageItem(item) ? formatResourceSourceLabel(item) : item.name}`, width, "…"),
-		...(item.category === "prompts" && "argumentHint" in item && item.argumentHint
-			? [truncateToWidth(`${theme.fg("muted", "Argument Hint")}: ${item.argumentHint}`, width, "…")]
-			: []),
-		...(settings.showSource ? [truncateToWidth(`${theme.fg("muted", "Source")}: ${sourceText}`, width, "…")] : []),
-		...(settings.showPathInPackage && item.packageRelativePath
-			? [truncateToWidth(`${theme.fg("muted", "Path in Package")}: ${item.packageRelativePath}`, width, "…")]
-			: []),
-		...(settings.showPath && pathText
-			? [truncateToWidth(`${theme.fg("muted", "Path")}: ${pathText}`, width, "…")]
-			: []),
-	];
+	const lines = item.category === "prompts" && "argumentHint" in item && item.argumentHint
+		? [truncateToWidth(`${theme.fg("muted", "Argument Hint")}: ${item.argumentHint}`, width, "…")]
+		: [];
 	if (isPackageItem(item)) {
 		if (item.version) lines.push(truncateToWidth(`${theme.fg("muted", "Version")}: ${item.version}`, width, "…"));
 		const enabledSummary = formatPackageEnabledSummary(item);
@@ -278,7 +246,7 @@ export function renderPackageItemsPage(args: {
 				: theme.fg("dim", "[hidden]")
 			: "";
 		const primary = `${marker} ${toggle}${exposure ? ` ${exposure}` : ""} ${pinBadge}${item.name}`;
-		const label = theme.fg("dim", item.packageRelativePath ?? ("path" in item ? item.path : item.name));
+		const label = theme.fg("dim", item.packageRelativePath ?? ("path" in item ? item.path : undefined) ?? item.name);
 		const spacing = Math.max(1, width - visibleWidth(primary) - visibleWidth(label));
 		let line = truncateToWidth(`${primary}${" ".repeat(spacing)}${label}`, width, "…");
 		line = selected ? theme.bg("selectedBg", line) : theme.fg("text", line);

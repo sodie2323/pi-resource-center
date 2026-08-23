@@ -1,7 +1,7 @@
 /**
  * 按浏览器 mode 处理键盘输入，负责把输入映射为导航和动作调用。
  */
-import { getKeybindings, type Input, type SettingsList } from "@earendil-works/pi-tui";
+import type { Input, KeybindingsManager, SettingsList } from "@earendil-works/pi-tui";
 import { getDetailActions } from "./actions.js";
 import { moveSelection } from "./navigation.js";
 import { canExposeResource, canManagePackageContents, isPackageItem, supportsPackageUpdate } from "../resource/capabilities.js";
@@ -10,6 +10,7 @@ import type { BrowserListEntry, BrowserMode, PackageContentCategory, PackageGrou
 import type { ResourceItem } from "../types.js";
 
 export function handleListInput(data: string, args: {
+	keybindings: KeybindingsManager;
 	selectedEntry?: BrowserListEntry;
 	maxVisible: number;
 	onOpenSettings: () => void;
@@ -25,7 +26,7 @@ export function handleListInput(data: string, args: {
 	searchInput: Input;
 	onApplyFilter: () => void;
 }): void {
-	const kb = getKeybindings();
+	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
 	if (kb.matches(data, "tui.select.cancel")) return void args.onClose();
 	if (kb.matches(data, "tui.editor.cursorLeft")) return args.onMoveCategory(-1);
@@ -57,6 +58,7 @@ export function handleListInput(data: string, args: {
 }
 
 export function handleDetailInput(data: string, args: {
+	keybindings: KeybindingsManager;
 	detailItem?: ResourceItem;
 	confirmingRemove: boolean;
 	setConfirmingRemove: (value: boolean) => void;
@@ -74,7 +76,7 @@ export function handleDetailInput(data: string, args: {
 	onRemoveItem: (item: ResourceItem) => void;
 	onAddResource?: () => void;
 }): void {
-	const kb = getKeybindings();
+	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
 	if (data === "P") {
 		if (args.detailItem) args.onTogglePinned(args.detailItem);
@@ -138,6 +140,7 @@ export function handleDetailInput(data: string, args: {
 }
 
 export function handlePackageGroupsInput(data: string, args: {
+	keybindings: KeybindingsManager;
 	packageItem?: ResourceItem;
 	entries: PackageGroupEntry[];
 	selectedIndex: number;
@@ -156,7 +159,7 @@ export function handlePackageGroupsInput(data: string, args: {
 	onInvalidatePackageViewCaches: (packageId?: string) => void;
 	onGetEntriesLength: () => number;
 }): void {
-	const kb = getKeybindings();
+	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
 	if (kb.matches(data, "tui.select.cancel")) {
 		if (args.packageItem) return args.onOpenParentPackage(args.packageItem);
@@ -183,6 +186,7 @@ export function handlePackageGroupsInput(data: string, args: {
 }
 
 export function handleSettingsInput(data: string, args: {
+	keybindings: KeybindingsManager;
 	settingsReturnMode: Exclude<BrowserMode, "settings">;
 	onSetMode: (mode: BrowserMode) => void;
 	onMoveSettingsSection: (delta: -1 | 1) => void;
@@ -190,13 +194,8 @@ export function handleSettingsInput(data: string, args: {
 	searchInput: Input;
 	onResetSettingsListCache: () => void;
 }): void {
-	const kb = getKeybindings();
+	const kb = args.keybindings;
 	const settingsList = args.settingsList();
-	const activeSubmenu = Boolean((settingsList as SettingsList & { submenuComponent?: unknown }).submenuComponent);
-	if (activeSubmenu) {
-		settingsList.handleInput?.(data);
-		return;
-	}
 	if (kb.matches(data, "tui.editor.cursorLeft")) return args.onMoveSettingsSection(-1);
 	if (kb.matches(data, "tui.editor.cursorRight") || kb.matches(data, "tui.input.tab")) return args.onMoveSettingsSection(1);
 	if (
@@ -217,6 +216,7 @@ export function handleSettingsInput(data: string, args: {
 }
 
 export function handlePackageItemsInput(data: string, args: {
+	keybindings: KeybindingsManager;
 	selectedItem?: ResourceItem;
 	itemsLength: number;
 	selectedIndex: number;
@@ -234,7 +234,7 @@ export function handlePackageItemsInput(data: string, args: {
 	onInvalidatePackageViewCaches: (packageId: string | undefined, category: PackageContentCategory) => void;
 	onRefreshPackageContents: () => void;
 }): void {
-	const kb = getKeybindings();
+	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
 	if (kb.matches(data, "tui.select.cancel")) return args.onSetMode("packageGroups");
 	if (kb.matches(data, "tui.select.up")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.itemsLength, -1));

@@ -2,13 +2,13 @@
  * 资源浏览器核心状态容器：负责协调 UI 状态、渲染适配、缓存与回调。
  */
 import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_EXTERNAL_SKILL_SOURCES, type ResourceCenterSettings } from "../settings.js";
+import { DEFAULT_EXTERNAL_SKILL_SOURCES, USER_AGENT_DIR, type ResourceCenterSettings } from "../settings.js";
 import {
 	type Component,
 	type Focusable,
 	Input,
 	fuzzyFilter,
-	getKeybindings,
+	type KeybindingsManager,
 	SettingsList,
 	type SettingItem,
 	truncateToWidth,
@@ -24,6 +24,7 @@ import {
 	SETTINGS_SECTION_ORDER,
 	SORT_MODE_LABELS,
 	SORT_MODE_VALUES,
+	formatResourceSourceLabel,
 	type ResourceSortMode,
 	reloadBehaviorFromLabel,
 	sortModeFromLabel,
@@ -43,7 +44,6 @@ import {
 	getVisibleCategoryItems as selectVisibleCategoryItems,
 } from "./selectors.js";
 import {
-	renderDescriptionBlock as renderDescriptionBlockView,
 	renderDetailPage as renderDetailPageView,
 	renderFooterWithSettingsHint as renderFooterWithSettingsHintView,
 	renderHeader as renderHeaderView,
@@ -85,6 +85,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private readonly theme: Theme;
 	private readonly callbacks: BrowserCallbacks;
 	private readonly cwd: string;
+	private readonly keybindings: KeybindingsManager;
 	private readonly mainSearchInput: Input;
 	private readonly packageSearchInput: Input;
 	private readonly settingsSearchInput: Input;
@@ -106,6 +107,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private packageContentsItems: ResourceItem[] = [];
 	private packageContentsSelectedIndex = 0;
 	private settingsSection: SettingsSection = "all";
+	private settingsSelectedIndex = 0;
 	private settingsList: SettingsList | undefined;
 	private settingsListSection: SettingsSection | undefined;
 	private settingsListQuery: string | undefined;
@@ -145,13 +147,14 @@ export class ResourceBrowser implements Component, Focusable {
 		this.addInput.focused = value;
 	}
 
-	constructor(theme: Theme, resources: ResourceIndex, category: ResourceCategory, settings: ResourceCenterSettings, callbacks: BrowserCallbacks, cwd: string) {
+	constructor(theme: Theme, resources: ResourceIndex, category: ResourceCategory, settings: ResourceCenterSettings, callbacks: BrowserCallbacks, cwd: string, keybindings: KeybindingsManager) {
 		this.theme = theme;
 		this.resources = resources;
 		this.settings = prunePinnedResourceIds(settings, resources);
 		this.category = category;
 		this.callbacks = callbacks;
 		this.cwd = cwd;
+		this.keybindings = keybindings;
 		this.mainSearchInput = new Input();
 		this.packageSearchInput = new Input();
 		this.settingsSearchInput = new Input();
@@ -237,6 +240,7 @@ export class ResourceBrowser implements Component, Focusable {
 		}
 
 		handleListInput(data, {
+			keybindings: this.keybindings,
 			selectedEntry: this.filteredListEntries[this.selectedIndex],
 			maxVisible: this.maxVisible,
 			onOpenSettings: () => this.openSettings(),
@@ -362,14 +366,11 @@ export class ResourceBrowser implements Component, Focusable {
 			theme: this.theme,
 			width,
 			item: this.detailItem,
-			settings: this.settings,
-			isPinned: (item) => this.isPinned(item),
 			detailSelectedIndex: this.detailSelectedIndex,
 			getDetailActions: (item) => getDetailActions(item),
 			getDetailActionLabel: (action, item, selected) => getDetailActionLabel(this.theme, action, item, { isPinned: this.isPinned(item), selected }),
 			getPersistedActionHint: (action) => this.getPersistedActionHint(action),
 			getDetailActionHint: (action, item) => getDetailActionHint(this.theme, action, item, { isPinned: this.isPinned(item), confirmingRemove: this.confirmingRemove }),
-			formatPackageEnabledStateText: (item) => this.formatPackageEnabledStateText(item),
 			formatPackageEnabledSummary: (item) => this.formatPackageEnabledSummary(item),
 			formatPackageCounts: (item, detailed, dimmed) => this.formatPackageCounts(item, detailed, dimmed),
 		});
@@ -441,10 +442,6 @@ export class ResourceBrowser implements Component, Focusable {
 		return renderSettingsSearchView(this.theme, width, input);
 	}
 
-	private renderDescriptionBlock(text: string, width: number): string[] {
-		return renderDescriptionBlockView(this.theme, text, width);
-	}
-
 	private renderTopRule(width: number): string {
 		return renderTopRuleView(this.theme, width);
 	}
@@ -490,13 +487,6 @@ export class ResourceBrowser implements Component, Focusable {
 		return this.theme.fg("warning", this.theme.bold(label));
 	}
 
-	private formatPackageEnabledStateText(item: ResourceItem): string {
-		const state = this.getPackageEnabledState(item);
-		if (!state || state.enabledCount === 0) return this.theme.fg("dim", "off");
-		if (state.enabledCount === state.totalCount) return this.theme.fg("success", "on");
-		return this.theme.fg("warning", "partial");
-	}
-
 	private getPackageEnabledState(item: ResourceItem): { enabledCount: number; totalCount: number } | undefined {
 		if (item.category !== "packages") return undefined;
 		if (item.enabledSummary) return item.enabledSummary;
@@ -506,6 +496,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private handleDetailInput(data: string): void {
 		handleDetailInputMode(data, {
+			keybindings: this.keybindings,
 			detailItem: this.detailItem,
 			confirmingRemove: this.confirmingRemove,
 			setConfirmingRemove: (value) => {
@@ -534,6 +525,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private handlePackageGroupsInput(data: string): void {
 		handlePackageGroupsInputMode(data, {
+			keybindings: this.keybindings,
 			packageItem: this.packageItem,
 			entries: this.getPackageGroupEntries(),
 			selectedIndex: this.packageGroupSelectionIndex,
@@ -562,7 +554,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private handleSettingsInput(data: string): void {
-		const kb = getKeybindings();
+		const kb = this.keybindings;
 		if (this.settingsInlineEditItemId && this.settingsInlineEditInput) {
 			if (kb.matches(data, "tui.select.confirm")) {
 				this.stopInlineSettingsEdit(true);
@@ -599,6 +591,7 @@ export class ResourceBrowser implements Component, Focusable {
 				const sourceId = selectedItem.id.slice("externalSkillSourceRow:".length);
 				if (this.isCustomExternalSkillSource(sourceId)) {
 					this.applySettingsChange(`externalSkillSourceRemove:${sourceId}`, "remove");
+					this.settingsSelectedIndex = 0;
 					this.settingsList = undefined;
 					this.settingsListSection = undefined;
 					this.settingsListQuery = undefined;
@@ -608,13 +601,19 @@ export class ResourceBrowser implements Component, Focusable {
 		}
 		if ((data === "a" || data === "A") && this.settingsSection === "integrations") {
 			this.applySettingsChange("externalSkillSourceAdd", "add");
+			this.settingsSelectedIndex = 0;
 			this.settingsList = undefined;
 			this.settingsListSection = undefined;
 			this.settingsListQuery = undefined;
 			return;
 		}
 
+		const settingsItemCount = this.getFilteredSettingsItems(this.settingsSection).length;
+		if (kb.matches(data, "tui.select.up")) this.settingsSelectedIndex = moveSelection(this.settingsSelectedIndex, settingsItemCount, -1);
+		else if (kb.matches(data, "tui.select.down")) this.settingsSelectedIndex = moveSelection(this.settingsSelectedIndex, settingsItemCount, 1);
+
 		handleSettingsInputMode(data, {
+			keybindings: this.keybindings,
 			settingsReturnMode: this.settingsReturnMode,
 			onSetMode: (mode) => {
 				this.mode = mode;
@@ -623,6 +622,7 @@ export class ResourceBrowser implements Component, Focusable {
 			settingsList: () => this.ensureSettingsList(),
 			searchInput: this.settingsSearchInput,
 			onResetSettingsListCache: () => {
+				this.settingsSelectedIndex = 0;
 				this.settingsList = undefined;
 				this.settingsListSection = undefined;
 				this.settingsListQuery = undefined;
@@ -632,6 +632,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private handlePackageItemsInput(data: string): void {
 		handlePackageItemsInputMode(data, {
+			keybindings: this.keybindings,
 			selectedItem: this.packageContentsItems[this.packageContentsSelectedIndex],
 			itemsLength: this.packageContentsItems.length,
 			selectedIndex: this.packageContentsSelectedIndex,
@@ -875,13 +876,23 @@ export class ResourceBrowser implements Component, Focusable {
 		this.searchTextCache.clear();
 		for (const category of CATEGORY_ORDER) {
 			for (const item of this.resources.categories[category]) {
+				const packageSummary = isPackageItem(item) && item.enabledSummary
+					? `${item.enabledSummary.enabledCount}/${item.enabledSummary.totalCount}`
+					: "";
 				const base = [
 					item.name,
 					item.source,
 					item.sourceLabel ?? "",
+					formatResourceSourceLabel(item),
+					item.scope,
+					item.category,
+					CATEGORY_LABELS[item.category],
+					isContainedResource(item) ? "pkg package" : "",
 					"externalPluginName" in item ? item.externalPluginName ?? "" : "",
 					item.packageSource ?? "",
 					item.packageRelativePath ?? "",
+					isPackageItem(item) ? item.version ?? "" : "",
+					packageSummary,
 				]
 					.join(" ")
 					.toLowerCase();
@@ -899,7 +910,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private getSearchText(item: ResourceItem): string {
 		const cached = this.searchTextCache.get(item.id);
-		if (!cached) return `${item.name} ${item.source}`.toLowerCase();
+		if (!cached) return `${item.name} ${item.source} ${formatResourceSourceLabel(item)} ${item.scope}`.toLowerCase();
 		if (this.settings.searchIncludeDescription && this.settings.searchIncludePath) return cached.withDescriptionAndPath;
 		if (this.settings.searchIncludeDescription) return cached.withDescription;
 		if (this.settings.searchIncludePath) return cached.withPath;
@@ -1062,7 +1073,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private handleAddInput(data: string): void {
-		const kb = getKeybindings();
+		const kb = this.keybindings;
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.closeAddMode();
 			return;
@@ -1071,7 +1082,7 @@ export class ResourceBrowser implements Component, Focusable {
 			this.openSettings();
 			return;
 		}
-		const navigated = handleAddModeNavigation(this.addState, data);
+		const navigated = handleAddModeNavigation(this.addState, data, this.keybindings);
 		if (navigated !== this.addState) {
 			this.addState = navigated;
 			return;
@@ -1172,8 +1183,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private renderSettingsList(width: number): string[] {
 		const items = this.getFilteredSettingsItems(this.settingsSection);
 		const theme = this.getAdjustedSettingsTheme();
-		const listState = this.ensureSettingsList() as SettingsList & { selectedIndex?: number };
-		const selectedIndex = Math.max(0, Math.min(listState.selectedIndex ?? 0, Math.max(0, items.length - 1)));
+		const selectedIndex = Math.max(0, Math.min(this.settingsSelectedIndex, Math.max(0, items.length - 1)));
 		const lines: string[] = [];
 		if (items.length === 0) {
 			lines.push(theme.hint("No settings available"));
@@ -1224,9 +1234,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private getSelectedSettingsItem(): SettingItem | undefined {
 		const items = this.getFilteredSettingsItems(this.settingsSection);
-		const listState = this.ensureSettingsList() as SettingsList & { selectedIndex?: number };
-		const selectedIndex = listState.selectedIndex ?? 0;
-		return items[selectedIndex];
+		return items[this.settingsSelectedIndex];
 	}
 
 	private startInlineSettingsEdit(item: SettingItem): void {
@@ -1285,27 +1293,6 @@ export class ResourceBrowser implements Component, Focusable {
 				description: "Choose what happens after resource settings change: only show a /reload hint, ask first, or reload immediately.",
 				currentValue: RELOAD_BEHAVIOR_LABELS[this.settings.reloadBehavior],
 				values: RELOAD_BEHAVIOR_VALUES,
-			},
-			{
-				id: "showSource",
-				label: "Show source",
-				description: "Show source values in detail pages.",
-				currentValue: this.settings.showSource ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "showPath",
-				label: "Show path",
-				description: "Show file paths in detail pages.",
-				currentValue: this.settings.showPath ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "showPathInPackage",
-				label: "Show path in package",
-				description: "Show package-relative paths for package resources.",
-				currentValue: this.settings.showPathInPackage ? "true" : "false",
-				values: ["true", "false"],
 			},
 			{
 				id: "sortMode",
@@ -1382,15 +1369,6 @@ export class ResourceBrowser implements Component, Focusable {
 			case "reloadBehavior":
 				next.reloadBehavior = reloadBehaviorFromLabel(newValue);
 				break;
-			case "showSource":
-				next.showSource = newValue === "true";
-				break;
-			case "showPath":
-				next.showPath = newValue === "true";
-				break;
-			case "showPathInPackage":
-				next.showPathInPackage = newValue === "true";
-				break;
 			case "sortMode":
 				next.sortMode = sortModeFromLabel(newValue);
 				break;
@@ -1442,7 +1420,7 @@ export class ResourceBrowser implements Component, Focusable {
 		return {
 			id: `custom-${index}`,
 			label: `Custom ${index}`,
-			path: `~/.pi/agent/custom-skills-${index}`,
+			path: `${USER_AGENT_DIR.replace(/\\/g, "/")}/custom-skills-${index}`,
 			enabled: true,
 		};
 	}
@@ -1450,6 +1428,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private moveSettingsSection(delta: -1 | 1): void {
 		const index = SETTINGS_SECTION_ORDER.indexOf(this.settingsSection);
 		this.settingsSection = SETTINGS_SECTION_ORDER[(index + delta + SETTINGS_SECTION_ORDER.length) % SETTINGS_SECTION_ORDER.length]!;
+		this.settingsSelectedIndex = 0;
 		this.settingsList = undefined;
 		this.settingsListSection = undefined;
 	}

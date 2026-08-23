@@ -1,10 +1,10 @@
 /**
  * 负责打开资源浏览器，并把浏览器动作连接到实际资源变更逻辑。
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ResourceBrowser } from "../browser/browser.js";
 import { discoverResources } from "./discovery.js";
-import { canRemoveResourceIndividually, isPackageItem, isThemeItem, supportsPackageUpdate } from "./capabilities.js";
+import { canRemoveResourceIndividually, isPackageItem, isResourceCenterPackage, isThemeItem, supportsPackageUpdate } from "./capabilities.js";
 import { buildSuccessOperationMessage, ResourceOperationStatusController } from "./operation-status.js";
 import {
 	getExposeErrorMessage,
@@ -16,27 +16,36 @@ import {
 	getToggleErrorMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
-import { addResourceFromInput, reloadAfterSettingsChange } from "./commands.js";
-import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setExternalSkillEnabled, setResourceExposed, syncExternalSkillSourcesToPiSettings, toggleResourceInSettings } from "../settings.js";
+import { addResourceFromInput, reloadAfterSettingsChange, updatePackageSource } from "./commands.js";
+import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setExternalSkillEnabled, setExternalSkillsEnabled, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
-type OperationKind = "add" | "update";
-
-export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext): Promise<void> {
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify("The Resource Center browser is only available in interactive TUI mode. Use /resource subcommands in this mode.", "warning");
+		return;
+	}
 	const resourceCenterSettings = await readResourceCenterSettings();
-	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources, resourceCenterSettings.disabledExternalSkills);
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
 	let currentResourceCenterSettings = resourceCenterSettings;
 	let hasPendingChanges = false;
 
-	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+	await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
 		let browserOpen = true;
 		let browser!: ResourceBrowser;
+		let refreshGeneration = 0;
+		let settingsSaveQueue: Promise<void> = Promise.resolve();
 		const requestRender = () => {
 			if (browserOpen) tui.requestRender();
 		};
 		const refreshBrowser = async () => {
-			browser.setResources(await discoverResources(ctx.cwd, ctx.ui.theme.name));
+			const generation = ++refreshGeneration;
+			const nextResources = await discoverResources(ctx.cwd, ctx.ui.theme.name, {
+				projectTrusted: ctx.isProjectTrusted(),
+				syncExternalSkills: false,
+			});
+			if (!browserOpen || generation !== refreshGeneration) return;
+			browser.setResources(nextResources);
 			requestRender();
 		};
 		const operationStatus = new ResourceOperationStatusController(ctx.ui, theme, {
@@ -54,10 +63,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 		const closeBrowser = async () => {
 			browserOpen = false;
+			refreshGeneration += 1;
 			done(undefined);
-			if (!hasPendingChanges) {
-				return;
-			}
+			await settingsSaveQueue;
+			if (!hasPendingChanges) return;
 			await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 		};
 		const startUpdateSpinner = (source: string) => {
@@ -75,28 +84,16 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				setActionMessage("update", "warning", "Only remote packages can be updated");
 				return;
 			}
-			const cliEntry = process.argv[1];
-			if (!cliEntry) {
-				setActionMessage("update", "error", "Couldn't determine the pi CLI entrypoint");
-				return;
-			}
 			const operationToken = startUpdateSpinner(item.source);
 			try {
-				const result = await pi.exec(process.execPath, [cliEntry, "update", item.source], { signal: ctx.signal });
+				await updatePackageSource(ctx.cwd, item.source, ctx.isProjectTrusted());
 				operationStatus.stop(operationToken);
-				const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-				if (result.code === 0) {
-					hasPendingChanges = true;
-					if (browserOpen) await refreshBrowser();
-					const message = buildSuccessOperationMessage("Updated package", item.source, output);
-					setActionMessage("update", "info", message);
-					ctx.ui.notify(message, "info");
-					if (!browserOpen) await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
-				} else {
-					const message = output || `Failed to update package ${item.source}`;
-					setActionMessage("update", "error", message);
-					ctx.ui.notify(message, "warning");
-				}
+				hasPendingChanges = true;
+				if (browserOpen) await refreshBrowser();
+				const message = buildSuccessOperationMessage("Updated package", item.source, "");
+				setActionMessage("update", "info", message);
+				ctx.ui.notify(message, "info");
+				if (!browserOpen) await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 			} catch (error: unknown) {
 				operationStatus.stop(operationToken);
 				const message = error instanceof Error ? error.message : String(error);
@@ -106,6 +103,11 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 		const toggleItem = async (item: ResourceItem) => {
 			try {
+				if (isPackageItem(item) && !item.enabled && isResourceCenterPackage(item)) {
+					item.enabled = true;
+					setActionMessage("toggle", "warning", "Resource Center cannot disable itself while it is running. Use pi config if this is intentional.");
+					return;
+				}
 				if ("externalSkillId" in item && item.externalSkillId) {
 					const statePath = await setExternalSkillEnabled(item.externalSkillId, item.enabled);
 					hasPendingChanges = true;
@@ -114,13 +116,15 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					return;
 				}
 				if (isThemeItem(item)) {
-					const settingsPath = await setActiveTheme(ctx.cwd, item.name, item.scope);
-					ctx.ui.setTheme(item.name);
+					if (!ctx.ui.getTheme(item.name)) throw new Error(`Theme ${item.name} is not loaded`);
+					const settingsPath = await setActiveTheme(ctx.cwd, item.name, item.scope, ctx.isProjectTrusted());
+					const themeResult = ctx.ui.setTheme(item.name);
+					if (!themeResult.success) throw new Error(`Theme setting was saved, but the UI switch failed: ${themeResult.error}`);
 					await refreshBrowser();
 					setActionMessage("toggle", "info", getToggleSuccessMessage(item, settingsPath));
 					return;
 				}
-				const settingsPath = await toggleResourceInSettings(ctx.cwd, item);
+				const settingsPath = await toggleResourceInSettings(ctx.cwd, item, ctx.isProjectTrusted());
 				hasPendingChanges = true;
 				await refreshBrowser();
 				setActionMessage("toggle", "info", getToggleSuccessMessage(item, settingsPath));
@@ -134,14 +138,18 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			try {
 				let settingsPath: string | undefined;
 				let changedCount = 0;
-				for (const item of items) {
-					if (item.enabled === enabled) continue;
-					item.enabled = enabled;
-					if ("externalSkillId" in item && item.externalSkillId) {
-						settingsPath = await setExternalSkillEnabled(item.externalSkillId, enabled);
-					} else {
-						settingsPath = await toggleResourceInSettings(ctx.cwd, item);
-					}
+				const changedItems = items.filter((item) => item.enabled !== enabled);
+				const externalSkillIds = changedItems.flatMap((item) =>
+					"externalSkillId" in item && item.externalSkillId ? [item.externalSkillId] : [],
+				);
+				for (const item of changedItems) item.enabled = enabled;
+				if (externalSkillIds.length > 0) {
+					settingsPath = await setExternalSkillsEnabled(externalSkillIds, enabled);
+					changedCount += externalSkillIds.length;
+				}
+				for (const item of changedItems) {
+					if ("externalSkillId" in item && item.externalSkillId) continue;
+					settingsPath = await toggleResourceInSettings(ctx.cwd, item, ctx.isProjectTrusted());
 					changedCount += 1;
 				}
 				hasPendingChanges = true;
@@ -177,7 +185,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					requestRender();
 					return;
 				}
-				const settingsPath = await removeResourceFromSettings(ctx.cwd, item);
+				const settingsPath = await removeResourceFromSettings(ctx.cwd, item, ctx.isProjectTrusted());
 				hasPendingChanges = true;
 				await refreshBrowser();
 				setActionMessage("remove", "info", getRemoveSuccessMessage(item, settingsPath));
@@ -189,7 +197,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		const addResource = async (request: { input: string; scope: "project" | "user"; preferredCategory?: import("./add-detect.js").AddPathCategory }): Promise<void> => {
 			const operationToken = operationStatus.start("add", `Adding ${request.input}...`);
 			try {
-				const result = await addResourceFromInput(ctx.cwd, request.input, request.scope, request.preferredCategory, pi, ctx.signal);
+				const result = await addResourceFromInput(ctx.cwd, request.input, request.scope, request.preferredCategory, ctx.isProjectTrusted());
 				hasPendingChanges = true;
 				if (browserOpen) await refreshBrowser();
 				operationStatus.stop(operationToken);
@@ -218,11 +226,11 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				const externalSourcesChanged = previousExternalSources !== nextExternalSources;
 				if (externalSourcesChanged) hasPendingChanges = true;
 				currentResourceCenterSettings = settings;
-				void saveResourceCenterSettings(settings)
+				const settingsSnapshot = structuredClone(settings);
+				settingsSaveQueue = settingsSaveQueue
 					.then(async () => {
-						if (externalSourcesChanged) await refreshBrowser();
-						const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
-						await saveResourceCenterSettings(settings, resources);
+						await saveResourceCenterSettings(settingsSnapshot);
+						if (externalSourcesChanged && browserOpen) await refreshBrowser();
 					})
 					.catch((error: unknown) => {
 						const message = error instanceof Error ? error.message : String(error);
@@ -230,7 +238,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					});
 			},
 			onRequestRender: requestRender,
-		}, ctx.cwd);
+		}, ctx.cwd, keybindings);
 		return {
 			render: (width) => browser.render(width),
 			invalidate: () => browser.invalidate(),

@@ -1,8 +1,16 @@
 {
 	"name": "pi-resource-center",
-	"version": "0.2.7",
+	"version": "0.3.0",
 	"description": "Pi package for browsing packages, skills, extensions, prompts, and themes",
 	"type": "module",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"test": "node --experimental-strip-types --import ./test/register-loader.mjs --test test/*.test.js",
+		"typecheck": "tsc -p tsconfig.json",
+		"check": "npm run typecheck && npm test"
+	},
 	"files": [
 		"extensions",
 		"src",
@@ -30,8 +38,12 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*"
+		"@earendil-works/pi-coding-agent": ">=0.79.7",
+		"@earendil-works/pi-tui": ">=0.79.7"
+	},
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"typescript": "^5.9.3"
 	},
 	"license": "MIT"
 }

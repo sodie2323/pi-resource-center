@@ -13,10 +13,12 @@ const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "pro
 
 let completionProviderPromise: Promise<ResourceCompletionProvider> | undefined;
 let sessionCwd = process.cwd();
+let sessionProjectTrusted = true;
 
 async function getCompletionProvider(): Promise<ResourceCompletionProvider> {
 	const completions = await (completionProviderPromise ??= import("./resource/completions.js").then(({ ResourceCompletionProvider }) => new ResourceCompletionProvider()));
 	completions.setCwd(sessionCwd);
+	completions.setProjectTrusted(sessionProjectTrusted);
 	return completions;
 }
 
@@ -28,7 +30,7 @@ export default function resourceCenter(pi: ExtensionAPI) {
 			return completions.getArgumentCompletions(prefix);
 		},
 		handler: async (args, ctx) => {
-			await handleResourceCommand(args, ctx, pi);
+			await handleResourceCommand(args, ctx);
 		},
 	});
 
@@ -36,47 +38,44 @@ export default function resourceCenter(pi: ExtensionAPI) {
 		// 只记录 cwd，不导入补全/发现/浏览器模块；资源发现会在打开 /resource、sync、
 		// 或首次需要资源补全时按需执行，避免拖慢 Pi 启动。
 		sessionCwd = ctx.cwd;
-	});
-
-	pi.on("resources_discover", async () => {
-		return {};
+		sessionProjectTrusted = ctx.isProjectTrusted();
 	});
 }
 
-async function handleResourceCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+async function handleResourceCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
 	const completions = await getCompletionProvider();
 	completions.setCwd(ctx.cwd);
+	completions.setProjectTrusted(ctx.isProjectTrusted());
 	const [subcommand] = args.trim().split(/\s+/, 1);
 	if (!subcommand) {
 		const { openResourceBrowser } = await import("./resource/browser-open.js");
-		await openResourceBrowser("packages", ctx, pi);
+		await openResourceBrowser("packages", ctx);
 		return;
 	}
 
 	if (isCategory(subcommand)) {
 		const { openResourceBrowser } = await import("./resource/browser-open.js");
-		await openResourceBrowser(subcommand, ctx, pi);
+		await openResourceBrowser(subcommand, ctx);
 		return;
 	}
 
 	if (subcommand === "sync") {
-		const [{ discoverResources }, { readResourceCenterSettings, syncExternalSkillSourcesToPiSettings }] = await Promise.all([
+		const [{ discoverResources }, { clearCodexPluginInventoryCache }] = await Promise.all([
 			import("./resource/discovery.js"),
-			import("./settings.js"),
+			import("./resource/codex-plugin-inventory.js"),
 		]);
-		const settings = await readResourceCenterSettings();
-		await syncExternalSkillSourcesToPiSettings(settings.externalSkillSources, settings.externalSkillSources, settings.disabledExternalSkills);
-		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
-		await completions.refresh(ctx.cwd);
+		clearCodexPluginInventoryCache();
+		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
+		completions.updateFromResources(resources);
 		const count = Object.values(resources.categories).reduce((sum, items) => sum + items.length, 0);
 		ctx.ui.notify(`Discovered ${count} resources`, "info");
 		return;
 	}
 
 	const { handleAddCommand, handleExposureCommand, handleMutateCommand } = await import("./resource/commands.js");
-	const refresh = () => completions.refresh(ctx.cwd);
+	const refresh = () => completions.refresh(ctx.cwd, ctx.ui.theme.name);
 	if (subcommand === "add") {
-		await handleAddCommand(sliceCommandArgs(args, subcommand), ctx, pi, refresh);
+		await handleAddCommand(sliceCommandArgs(args, subcommand), ctx, refresh);
 		return;
 	}
 	if (subcommand === "remove") {

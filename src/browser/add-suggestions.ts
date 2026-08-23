@@ -1,6 +1,7 @@
 import { access, readdir } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 import { detectAddTargetSync } from "../resource/add-detect.js";
+import { PROJECT_AGENT_DIR } from "../settings.js";
 
 export type AddSuggestion = { value: string; label: string; description?: string };
 
@@ -79,7 +80,7 @@ async function scoreLocalPackageDirectory(parentDir: string, name: string): Prom
 	if (name.startsWith("pi-")) score += 25;
 	if (await pathExists(resolve(dirPath, "extensions"))) score += 15;
 	if (await pathExists(resolve(dirPath, "skills"))) score += 10;
-	if (await pathExists(resolve(dirPath, ".pi"))) score += 10;
+	if (await pathExists(resolve(dirPath, PROJECT_AGENT_DIR))) score += 10;
 	return score;
 }
 

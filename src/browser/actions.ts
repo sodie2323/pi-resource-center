@@ -8,6 +8,7 @@ import {
 	canRemoveResourceIndividually,
 	isContainedResource,
 	isPackageItem,
+	isResourceCenterPackage,
 	isThemeItem,
 	supportsPackageUpdate,
 } from "../resource/capabilities.js";
@@ -33,7 +34,15 @@ export function getDetailActionHint(
 			return theme.fg("dim", "Browse resources in this package");
 		case "toggle":
 			if (isPackageItem(item)) {
-				return theme.fg("dim", item.enabled ? "Disable all resources in this package" : "Enable all resources in this package");
+				if (item.enabled && isResourceCenterPackage(item)) {
+					return theme.fg("warning", "Resource Center cannot disable itself here; use pi config if intentional");
+				}
+				return theme.fg(
+					item.enabled ? "warning" : "dim",
+					item.enabled
+						? "Disable all resources and replace fine-grained package filters"
+						: "Enable package defaults and clear fine-grained package filters",
+				);
 			}
 			if (isThemeItem(item)) {
 				return item.enabled ? theme.fg("success", "Theme is currently active") : theme.fg("dim", "Apply this theme");

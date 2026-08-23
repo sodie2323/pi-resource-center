@@ -2,10 +2,12 @@
  * 对 Pi settings 中资源配置进行增删改切换的逻辑。
  */
 import { lstat, unlink } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { FileResourceItem, ResourceCategory, ResourceItem } from "../types.js";
 import type { AddPathCategory } from "../resource/add-detect.js";
+import { getConfigEntryPrefix, getConfigEntryTarget, setExactOverride } from "../resource/config-overrides.js";
+import { isResourceCenterPackage } from "../resource/capabilities.js";
 import {
 	USER_AGENT_DIR,
 	getProjectSettingsPath,
@@ -17,15 +19,19 @@ import {
 	inferPackageRelativePath,
 	normalizeConfigPath,
 	normalizeFsPath,
+	resolveHomePath,
 	toErrorMessage,
 	toSettingsPath,
 } from "./shared.js";
 
-export async function toggleResourceInSettings(cwd: string, item: ResourceItem): Promise<string> {
+export async function toggleResourceInSettings(cwd: string, item: ResourceItem, projectTrusted = true): Promise<string> {
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
+	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
 		if (item.category === "packages") {
+			if (!item.enabled && isResourceCenterPackage(item)) {
+				throw new Error("Resource Center cannot disable its own package while it is running; use pi config if this is intentional");
+			}
 			togglePackage(settingsManager, item.scope, item.source, item.enabled);
 		} else if (item.packageSource) {
 			togglePackageResource(settingsManager, item, item.enabled);
@@ -40,9 +46,9 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem):
 	}
 }
 
-export async function removeResourceFromSettings(cwd: string, item: ResourceItem): Promise<string> {
+export async function removeResourceFromSettings(cwd: string, item: ResourceItem, projectTrusted = true): Promise<string> {
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
+	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
 		if (item.category === "packages") {
 			const settings = item.scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
@@ -82,124 +88,40 @@ export async function removeConventionResource(item: ResourceItem): Promise<stri
 	}
 }
 
-export async function setActiveTheme(cwd: string, themeName: string, scope: "project" | "user" = "project"): Promise<string> {
+export async function setActiveTheme(cwd: string, themeName: string, scope: "project" | "user" = "project", projectTrusted = true): Promise<string> {
 	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
+	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
-		const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
-		settingsFile.settings.theme = themeName;
-		await saveSettingsFile(settingsPath, settingsFile.settings);
+		if (scope === "project") {
+			// SettingsManager currently has no project-scoped setTheme method. Still honor
+			// Pi's trust decision before updating the project settings file.
+			if (!settingsManager.isProjectTrusted()) throw new Error("Project is not trusted");
+			const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
+			settingsFile.settings.theme = themeName;
+			await saveSettingsFile(settingsPath, settingsFile.settings);
+		} else {
+			settingsManager.setTheme(themeName);
+			await settingsManager.flush();
+		}
 		return settingsPath;
 	} catch (error: unknown) {
 		throw new Error(`Failed to set active theme ${themeName} in ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
 }
 
-export async function addPackageToSettings(cwd: string, source: string, scope: "project" | "user" = "project"): Promise<string> {
+export async function addPathResourceToSettings(cwd: string, category: AddPathCategory, path: string, scope: "project" | "user" = "project", projectTrusted = true): Promise<string> {
 	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
+	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
 		const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
-		const packages = [...(settings.packages ?? [])] as PackageSource[];
-		const normalizedSource = normalizePackageSourceForSettings(source, dirname(settingsPath));
-		const index = packages.findIndex((entry) => packageSourcesMatch(entry, source, dirname(settingsPath)));
-		if (index === -1) packages.push(normalizedSource); else packages[index] = normalizedSource;
-		setPackagesForScope(settingsManager, scope, packages);
-		await settingsManager.flush();
-		return settingsPath;
-	} catch (error: unknown) {
-		throw new Error(`Failed to add package source ${source} to ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
-	}
-}
-
-function packageSourcesMatch(existing: PackageSource, inputSource: string, settingsDir: string): boolean {
-	const left = getPackageSourceMatchKey(typeof existing === "string" ? existing : existing.source, settingsDir);
-	const right = getPackageSourceMatchKey(inputSource, settingsDir);
-	return left === right;
-}
-
-function getPackageSourceMatchKey(source: string, settingsDir: string): string {
-	const parsed = parsePackageSource(source);
-	if (parsed.type === "npm") return `npm:${parsed.name}`;
-	if (parsed.type === "git") return `git:${parsed.host}/${parsed.path}`;
-	return `local:${normalizeFsPath(resolve(settingsDir, parsed.path))}`;
-}
-
-function normalizePackageSourceForSettings(source: string, settingsDir: string): string {
-	const parsed = parsePackageSource(source);
-	if (parsed.type === "local") {
-		const resolvedPath = resolve(settingsDir, parsed.path);
-		const relativePath = relative(settingsDir, resolvedPath);
-		const settingsValue = relativePath && !relativePath.startsWith("..") ? relativePath : resolvedPath;
-		return settingsValue.replace(/\\/g, "/");
-	}
-	return source;
-}
-
-function parsePackageSource(source: string):
-	| { type: "npm"; name: string }
-	| { type: "git"; host: string; path: string }
-	| { type: "local"; path: string } {
-	const trimmed = source.trim();
-	if (trimmed.startsWith("npm:")) {
-		return { type: "npm", name: parseNpmPackageName(trimmed.slice("npm:".length)) };
-	}
-	const gitSource = parseGitPackageSource(trimmed);
-	if (gitSource) return gitSource;
-	return { type: "local", path: trimmed };
-}
-
-function parseNpmPackageName(spec: string): string {
-	const trimmed = spec.trim();
-	const match = trimmed.match(/^(?<name>@[^@\s]+\/[^@\s]+|[^@\s]+)(?:@.+)?$/);
-	return match?.groups?.name ?? trimmed;
-}
-
-function parseGitPackageSource(source: string): { type: "git"; host: string; path: string } | undefined {
-	const trimmed = source.trim();
-	const withoutPrefix = trimmed.startsWith("git:") ? trimmed.slice(4) : trimmed;
-	const sshLike = withoutPrefix.match(/^(?:ssh:\/\/)?git@(?<host>[^/:]+)[:/](?<path>.+?)(?:@[^/]+)?$/);
-	if (sshLike?.groups?.host && sshLike.groups.path) {
-		return {
-			type: "git",
-			host: sshLike.groups.host.toLowerCase(),
-			path: normalizeGitRepoPath(sshLike.groups.path),
-		};
-	}
-	const urlLike = withoutPrefix.match(/^(?<protocol>https?|ssh|git):\/\/(?:(?<user>[^@/]+)@)?(?<host>[^/]+)\/(?<path>.+)$/);
-	if (urlLike?.groups?.host && urlLike.groups.path) {
-		return {
-			type: "git",
-			host: urlLike.groups.host.toLowerCase(),
-			path: normalizeGitRepoPath(urlLike.groups.path),
-		};
-	}
-	const shorthand = withoutPrefix.match(/^(?<host>github\.com|gitlab\.com|bitbucket\.org)\/(?<path>.+?)(?:@[^/]+)?$/i);
-	if (shorthand?.groups?.host && shorthand.groups.path) {
-		return {
-			type: "git",
-			host: shorthand.groups.host.toLowerCase(),
-			path: normalizeGitRepoPath(shorthand.groups.path),
-		};
-	}
-	return undefined;
-}
-
-function normalizeGitRepoPath(value: string): string {
-	const withoutRef = value.replace(/@[^/]+$/, "");
-	return withoutRef.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "").toLowerCase();
-}
-
-export async function addPathResourceToSettings(cwd: string, category: AddPathCategory, path: string, scope: "project" | "user" = "project"): Promise<string> {
-	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
-	try {
-		const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
-		const current = [...(settingsFile.settings[category] ?? [])];
-		const relativePath = toSettingsPath(path, settingsFile.dir);
-		const normalizedTargetPath = normalizeFsPath(resolve(settingsFile.dir, normalizeConfigPath(relativePath)));
-		const filtered = current.filter((entry) => normalizeFsPath(resolve(settingsFile.dir, normalizeConfigPath(entry))) !== normalizedTargetPath);
+		const current = [...(settings[category] ?? [])];
+		const settingsDir = dirname(settingsPath);
+		const relativePath = toSettingsPath(path, settingsDir);
+		const normalizedTargetPath = normalizeFsPath(resolve(settingsDir, normalizeConfigPath(relativePath)));
+		const filtered = current.filter((entry) => normalizeFsPath(resolve(settingsDir, normalizeConfigPath(entry))) !== normalizedTargetPath);
 		filtered.push(relativePath);
-		settingsFile.settings[category] = filtered;
-		await saveSettingsFile(settingsPath, settingsFile.settings);
+		setPathEntriesForScope(settingsManager, scope, category, filtered);
+		await settingsManager.flush();
 		return settingsPath;
 	} catch (error: unknown) {
 		throw new Error(`Failed to add ${category.slice(0, -1)} path ${path} to ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
@@ -211,33 +133,31 @@ function togglePackage(settingsManager: SettingsManager, scope: "project" | "use
 	const packages = [...(settings.packages ?? [])] as PackageSource[];
 	const index = packages.findIndex((entry) => (typeof entry === "string" ? entry : entry.source) === source);
 	if (enabled) {
-		if (index === -1) packages.push(source); else packages[index] = source;
+		if (index === -1) packages.push(source);
+		else packages[index] = source;
 	} else {
 		const disabledEntry = { source, extensions: [], skills: [], prompts: [], themes: [] };
-		if (index === -1) packages.push(disabledEntry); else packages[index] = disabledEntry;
+		if (index === -1) packages.push(disabledEntry);
+		else packages[index] = disabledEntry;
 	}
-	setPackagesForScope(settingsManager, scope, packages.length > 0 ? packages : []);
+	setPackagesForScope(settingsManager, scope, packages);
 }
 
 function togglePathResource(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "themes">, item: FileResourceItem, settingsDir: string): void {
 	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
 	const current = [...(settings[category] ?? [])];
-	const normalizedPath = normalizeFsPath(resolve(item.path));
-	const filtered = current.filter((entry) => normalizeFsPath(resolve(settingsDir, normalizeConfigPath(entry))) !== normalizedPath);
 	const relativePath = toSettingsPath(item.path, settingsDir);
+	const normalizeEntryPath = (value: string) => normalizeFsPath(resolveConfigEntryPath(settingsDir, value));
+	const updated = setExactOverride(current, relativePath, item.enabled, {
+		normalize: normalizeEntryPath,
+		preserveMatchingPlainEntries: item.source === "manual",
+	});
 
-	if (item.source === "manual") {
-		// Explicit top-level path entries are only discovered from plain paths. A lone +path/-path
-		// override does not reintroduce the file into discovery, so keep the plain path and only add
-		// a force-exclude override when disabled.
-		filtered.push(relativePath);
-		if (!item.enabled) filtered.push(`-${relativePath}`);
-	} else {
-		// Convention/auto-discovered resources are discovered independently, so +/- overrides work.
-		filtered.push(item.enabled ? `+${relativePath}` : `-${relativePath}`);
+	if (item.source === "manual" && !hasDiscoveryEntryForPath(updated, item.path, settingsDir)) {
+		updated.unshift(relativePath);
 	}
 
-	setPathEntriesForScope(settingsManager, scope, category, filtered);
+	setPathEntriesForScope(settingsManager, scope, category, updated);
 }
 
 function togglePackageResource(settingsManager: SettingsManager, item: Exclude<ResourceItem, { category: "packages" }>, enabled: boolean): void {
@@ -254,26 +174,46 @@ function togglePackageResource(settingsManager: SettingsManager, item: Exclude<R
 	const category = item.category;
 	const current = [...(pkg[category] ?? [])];
 	const pattern = item.packageRelativePath ?? inferPackageRelativePath(item);
-	const updated = current.filter((entry) => normalizeConfigPath(entry) !== normalizeConfigPath(pattern));
-	updated.push(enabled ? `+${pattern}` : `-${pattern}`);
+	const updated = setExactOverride(current, pattern, enabled, { normalize: normalizeConfigPath });
 	pkg[category] = updated.length > 0 ? updated : undefined;
 	const hasFilters = ["extensions", "skills", "prompts", "themes"].some((key) => (pkg as unknown as Record<string, unknown>)[key] !== undefined);
 	if (!hasFilters) packages[index] = pkg.source;
 	setPackagesForScope(settingsManager, item.scope, packages.length > 0 ? packages : []);
 }
 
+function hasDiscoveryEntryForPath(entries: string[], resourcePath: string, settingsDir: string): boolean {
+	const normalizedResourcePath = normalizeFsPath(resolve(resourcePath));
+	return entries.some((entry) => {
+		if (getConfigEntryPrefix(entry)) return false;
+		const normalizedEntryPath = normalizeFsPath(resolveConfigEntryPath(settingsDir, entry));
+		return normalizedResourcePath === normalizedEntryPath || normalizedResourcePath.startsWith(`${normalizedEntryPath}/`);
+	});
+}
+
+function resolveConfigEntryPath(settingsDir: string, entry: string): string {
+	const target = getConfigEntryTarget(entry);
+	if (target === "~" || target.startsWith("~/") || target.startsWith("~\\")) return resolveHomePath(target);
+	return resolve(settingsDir, target);
+}
+
 function setPackagesForScope(settingsManager: SettingsManager, scope: "project" | "user", packages: PackageSource[]): void {
 	if (scope === "project") settingsManager.setProjectPackages(packages); else settingsManager.setPackages(packages);
 }
 
-function setPathEntriesForScope(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "themes">, paths: string[]): void {
+function setPathEntriesForScope(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages">, paths: string[]): void {
 	if (scope === "project") {
 		if (category === "extensions") settingsManager.setProjectExtensionPaths(paths);
 		else if (category === "skills") settingsManager.setProjectSkillPaths(paths);
-		else settingsManager.setProjectPromptTemplatePaths(paths);
+		else if (category === "prompts") settingsManager.setProjectPromptTemplatePaths(paths);
+		else settingsManager.setProjectThemePaths(paths);
 		return;
 	}
 	if (category === "extensions") settingsManager.setExtensionPaths(paths);
 	else if (category === "skills") settingsManager.setSkillPaths(paths);
-	else settingsManager.setPromptTemplatePaths(paths);
+	else if (category === "prompts") settingsManager.setPromptTemplatePaths(paths);
+	else settingsManager.setThemePaths(paths);
+}
+
+function createSettingsManager(cwd: string, projectTrusted: boolean): SettingsManager {
+	return SettingsManager.create(cwd, USER_AGENT_DIR, { projectTrusted });
 }

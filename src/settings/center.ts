@@ -1,9 +1,11 @@
 /**
  * 资源中心自身设置的读写与维护逻辑。
  */
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { canExposeResource } from "../resource/capabilities.js";
+import { getCodexPluginInventory } from "../resource/codex-plugin-inventory.js";
 import { pruneExposedResourceEntries, prunePinnedResourceIds } from "../resource/state-prune.js";
 import type { ResourceIndex, ResourceItem } from "../types.js";
 import {
@@ -14,10 +16,9 @@ import {
 	inferPackageRelativePath,
 	isFileNotFoundError,
 	normalizeConfigPath,
-	readSettingsFile,
 	resolveHomePath,
-	saveSettingsFile,
 	toErrorMessage,
+	USER_AGENT_DIR,
 	type ExposedResourceEntry,
 	type ExternalSkillSourceSetting,
 	type ResourceCenterSettings,
@@ -56,7 +57,14 @@ async function saveResourceCenterSettingsFile(file: ResourceCenterSettingsFile):
 
 export async function readResourceCenterSettings(): Promise<ResourceCenterSettings> {
 	const file = await readResourceCenterSettingsFile();
-	const { exposedResources: _exposed, ...settings } = file;
+	const {
+		exposedResources: _exposed,
+		externalSkillSyncEntries: _syncEntries,
+		showSource: _legacyShowSource,
+		showPath: _legacyShowPath,
+		showPathInPackage: _legacyShowPathInPackage,
+		...settings
+	} = file as ResourceCenterSettingsFile & Record<string, unknown>;
 	return settings;
 }
 
@@ -72,30 +80,45 @@ export async function saveResourceCenterSettings(settings: ResourceCenterSetting
 	}
 
 	const previousExternalSkillSources = file.externalSkillSources ?? DEFAULT_EXTERNAL_SKILL_SOURCES;
+	const previousDisabledExternalSkills = file.disabledExternalSkills ?? [];
 	const prunedSettings = resources ? prunePinnedResourceIds(settings, resources) : settings;
 	const exposedResources = resources ? pruneExposedResourceEntries(file.exposedResources, resources) : file.exposedResources;
-	const nextFile = { ...file, ...prunedSettings, exposedResources };
+	const {
+		showSource: _legacyShowSource,
+		showPath: _legacyShowPath,
+		showPathInPackage: _legacyShowPathInPackage,
+		...currentFile
+	} = file as ResourceCenterSettingsFile & Record<string, unknown>;
+	const nextFile = { ...currentFile, ...prunedSettings, exposedResources } as ResourceCenterSettingsFile;
 	const savedPath = await saveResourceCenterSettingsFile(nextFile);
-	await syncExternalSkillSourcesToPiSettings(previousExternalSkillSources, nextFile.externalSkillSources, nextFile.disabledExternalSkills);
+	const externalSourcesChanged = JSON.stringify(previousExternalSkillSources) !== JSON.stringify(nextFile.externalSkillSources);
+	const disabledSkillsChanged = !areStringArraysEqual(previousDisabledExternalSkills, nextFile.disabledExternalSkills ?? []);
+	if (externalSourcesChanged || disabledSkillsChanged) {
+		await syncExternalSkillSourcesToPiSettings(previousExternalSkillSources, nextFile.externalSkillSources, nextFile.disabledExternalSkills);
+	}
 	return savedPath;
 }
 
 export async function setExternalSkillEnabled(externalSkillId: string, enabled: boolean): Promise<string> {
+	return setExternalSkillsEnabled([externalSkillId], enabled);
+}
+
+export async function setExternalSkillsEnabled(externalSkillIds: Iterable<string>, enabled: boolean): Promise<string> {
 	const settingsPath = getResourceCenterSettingsPath();
+	const targetIds = new Set(externalSkillIds);
 	try {
 		const file = await readResourceCenterSettingsFile();
-		const current = file.disabledExternalSkills ?? [];
-		const nextDisabled = enabled
-			? current.filter((id) => id !== externalSkillId)
-			: current.includes(externalSkillId)
-				? current
-				: [...current, externalSkillId];
-		const nextFile = { ...file, disabledExternalSkills: nextDisabled.length ? nextDisabled : [] };
+		const nextDisabled = new Set(file.disabledExternalSkills ?? []);
+		for (const externalSkillId of targetIds) {
+			if (enabled) nextDisabled.delete(externalSkillId);
+			else nextDisabled.add(externalSkillId);
+		}
+		const nextFile = { ...file, disabledExternalSkills: [...nextDisabled].sort() };
 		await saveResourceCenterSettingsFile(nextFile);
 		await syncExternalSkillSourcesToPiSettings(file.externalSkillSources, nextFile.externalSkillSources, nextFile.disabledExternalSkills);
 		return settingsPath;
 	} catch (error: unknown) {
-		throw new Error(`Failed to ${enabled ? "enable" : "disable"} external skill ${externalSkillId} via ${settingsPath}: ${toErrorMessage(error)}`);
+		throw new Error(`Failed to ${enabled ? "enable" : "disable"} ${targetIds.size} external skill(s) via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
 }
 
@@ -129,7 +152,7 @@ function areExposedEntriesEqual(left: ExposedResourceEntry[] | undefined, right:
 	});
 }
 
-export async function setResourceExposed(cwd: string, item: ResourceItem, exposed: boolean): Promise<string> {
+export async function setResourceExposed(_cwd: string, item: ResourceItem, exposed: boolean): Promise<string> {
 	if (!canExposeResource(item)) {
 		throw new Error("Only package-contained extensions, skills, and prompts can be exposed");
 	}
@@ -157,58 +180,47 @@ export async function syncExternalSkillSourcesToPiSettings(
 	disabledExternalSkills: Iterable<string> = [],
 ): Promise<string> {
 	const settingsPath = getUserSettingsPath();
-	const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
-	const nextSkills = [...(settingsFile.settings.skills ?? [])];
-	const previousById = new Map(previousSources.map((source) => [source.id, source]));
-	const nextById = new Map(nextSources.map((source) => [source.id, source]));
-	const disabledExternalSkillIds = new Set(disabledExternalSkills);
-	const sourceIds = new Set([...previousById.keys(), ...nextById.keys()]);
+	const settingsManager = SettingsManager.create(process.cwd(), USER_AGENT_DIR, { projectTrusted: false });
+	const settingsDir = dirname(settingsPath);
+	const previousSkills = settingsManager.getGlobalSettings().skills ?? [];
+	const nextSkills = [...previousSkills];
+	const centerFile = await readResourceCenterSettingsFile();
+	const previousManagedEntries = centerFile.externalSkillSyncEntries;
 
-	for (const sourceId of sourceIds) {
-		const previous = previousById.get(sourceId);
-		const next = nextById.get(sourceId);
-		const previousResolvedPath = previous ? resolveHomePath(previous.path) : undefined;
-		const nextResolvedPath = next ? resolveHomePath(next.path) : undefined;
-
-		if (previousResolvedPath && (!next || !next.enabled || previousResolvedPath !== nextResolvedPath)) {
-			// When an external root is turned off (or repointed), the integration should stop
-			// contributing *any* skill entries from that subtree. This includes plain descendant
-			// paths such as ~/.codex/skills/pdf/SKILL.md that may have been written earlier by
-			// per-skill toggles while the root was enabled.
-			for (const cleanupPath of await getExternalSkillSourceCleanupPaths(previous)) {
-				removeManagedExternalSkillSourceEntries(nextSkills, settingsFile.dir, cleanupPath, true);
-			}
-		}
-
-		// Codex Plugins is a generated integration: the user-facing source path is
-		// ~/.codex/plugins, while Pi settings contain discovered plugin skill roots under
-		// cache/runtime directories. Reconcile it on every sync so disabled state and
-		// Codex cache version changes cannot leave stale Pi skill entries behind.
-		if (next && isCodexPluginSource(next)) {
-			for (const cleanupPath of await getExternalSkillSourceCleanupPaths(next)) {
-				removeManagedExternalSkillSourceEntries(nextSkills, settingsFile.dir, cleanupPath, true);
-			}
-		}
-
-		if (next?.enabled) {
-			if (isCodexPluginSource(next)) {
-				const entries = await collectCodexPluginSkillEntries(next.id, resolveHomePath(next.path));
-				for (const syncPath of Array.from(new Set(entries.map((entry) => entry.skillsRoot))).sort()) {
-					upsertExternalSkillSourceRoot(nextSkills, settingsFile.dir, syncPath);
-				}
-				for (const entry of entries) {
-					if (disabledExternalSkillIds.has(entry.externalSkillId)) upsertExternalSkillSourceDisable(nextSkills, settingsFile.dir, entry.path);
-				}
-			} else {
-				for (const syncPath of await getExternalSkillSourceSyncPaths(next)) {
-					upsertExternalSkillSourceRoot(nextSkills, settingsFile.dir, syncPath);
-				}
-			}
-		}
+	if (previousManagedEntries) {
+		removeExactManagedEntries(nextSkills, previousManagedEntries);
+	} else {
+		// One-time migration from versions that inferred ownership from directory roots.
+		// Only clean sources that were actually enabled, then switch to exact-entry tracking.
+		await cleanupLegacyExternalSkillEntries(nextSkills, settingsDir, previousSources, nextSources);
 	}
 
-	settingsFile.settings.skills = nextSkills.length > 0 ? nextSkills : undefined;
-	await saveSettingsFile(settingsPath, settingsFile.settings);
+	const disabledExternalSkillIds = new Set(disabledExternalSkills);
+	const nextManagedEntries: string[] = [];
+	for (const source of nextSources) {
+		if (!source.enabled) continue;
+		if (isCodexPluginSource(source)) {
+			const entries = await collectCodexPluginSkillEntries(source.id, resolveHomePath(source.path));
+			for (const skillsRoot of Array.from(new Set(entries.map((entry) => entry.skillsRoot))).sort()) {
+				appendManagedEntry(nextSkills, nextManagedEntries, skillsRoot.replace(/\\/g, "/"), settingsDir);
+			}
+			for (const entry of entries) {
+				if (disabledExternalSkillIds.has(entry.externalSkillId)) {
+					appendManagedEntry(nextSkills, nextManagedEntries, `-${entry.path.replace(/\\/g, "/")}`, settingsDir);
+				}
+			}
+			continue;
+		}
+		appendManagedEntry(nextSkills, nextManagedEntries, source.path.replace(/\\/g, "/"), settingsDir);
+	}
+
+	if (!areStringArraysEqual(previousSkills, nextSkills)) {
+		settingsManager.setSkillPaths(nextSkills);
+		await settingsManager.flush();
+	}
+	if (!areStringArraysEqual(previousManagedEntries ?? [], nextManagedEntries)) {
+		await saveResourceCenterSettingsFile({ ...centerFile, externalSkillSyncEntries: nextManagedEntries });
+	}
 	return settingsPath;
 }
 
@@ -229,205 +241,81 @@ function mergeExternalSkillSourcesWithDefaults(sources: ExternalSkillSourceSetti
 	return Array.from(merged.values());
 }
 
-async function getExternalSkillSourceSyncPaths(source: ExternalSkillSourceSetting): Promise<string[]> {
-	if (!isCodexPluginSource(source)) return [source.path];
-	return collectCodexPluginSkillRoots(resolveHomePath(source.path));
-}
-
-async function getExternalSkillSourceCleanupPaths(source: ExternalSkillSourceSetting | undefined): Promise<string[]> {
-	if (!source) return [];
-	if (!isCodexPluginSource(source)) return [resolveHomePath(source.path)];
-	return uniquePaths([
-		resolveHomePath(source.path),
-		resolveHomePath("~/.codex/plugins"),
-		resolveHomePath("~/.codex/plugins/cache"),
-		resolveHomePath("~/.cache/codex-runtimes"),
-	]);
-}
-
 function isCodexPluginSource(source: ExternalSkillSourceSetting): boolean {
 	return source.integration === "codex-plugin-cache" || source.id === "codex-plugins";
 }
 
-function uniquePaths(paths: string[]): string[] {
-	const seen = new Set<string>();
-	const result: string[] = [];
-	for (const path of paths) {
-		const key = normalizeAbsolutePath(path);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		result.push(path);
+async function cleanupLegacyExternalSkillEntries(
+	entries: string[],
+	settingsDir: string,
+	previousSources: ExternalSkillSourceSetting[],
+	nextSources: ExternalSkillSourceSetting[],
+): Promise<void> {
+	const nextById = new Map(nextSources.map((source) => [source.id, source]));
+	for (const previous of previousSources) {
+		if (!previous.enabled) continue;
+		const next = nextById.get(previous.id);
+		const sourceChanged = !next || !next.enabled || resolveHomePath(previous.path) !== resolveHomePath(next.path);
+		if (!sourceChanged) continue;
+		for (const entry of await getLegacyGeneratedRootEntries(previous)) removeOneSemanticEntry(entries, settingsDir, entry);
 	}
-	return result;
+	// Claim only exact roots that older Resource Center versions generated. Never remove
+	// arbitrary descendants during migration.
+	for (const next of nextSources) {
+		if (!next.enabled) continue;
+		for (const entry of await getLegacyGeneratedRootEntries(next)) removeOneSemanticEntry(entries, settingsDir, entry);
+	}
 }
 
-async function collectCodexPluginSkillRoots(cacheRoot: string): Promise<string[]> {
-	const entries = await collectCodexPluginSkillEntries("codex-plugins", cacheRoot);
-	return Array.from(new Set(entries.map((entry) => entry.skillsRoot))).sort();
+async function getLegacyGeneratedRootEntries(source: ExternalSkillSourceSetting): Promise<string[]> {
+	if (!isCodexPluginSource(source)) return [source.path.replace(/\\/g, "/")];
+	return (await getCodexPluginInventory(resolveHomePath(source.path))).map((plugin) => plugin.skillsRoot.replace(/\\/g, "/"));
+}
+
+function removeOneSemanticEntry(entries: string[], settingsDir: string, entry: string): void {
+	const key = getSettingsEntrySemanticKey(settingsDir, entry);
+	const index = entries.findIndex((existing) => getSettingsEntrySemanticKey(settingsDir, existing) === key);
+	if (index >= 0) entries.splice(index, 1);
+}
+
+function removeExactManagedEntries(entries: string[], managedEntries: string[]): void {
+	for (const managedEntry of managedEntries) {
+		const key = normalizeManagedEntryText(managedEntry);
+		const index = entries.findIndex((entry) => normalizeManagedEntryText(entry) === key);
+		if (index >= 0) entries.splice(index, 1);
+	}
+}
+
+function appendManagedEntry(entries: string[], managedEntries: string[], entry: string, settingsDir: string): void {
+	const key = getSettingsEntrySemanticKey(settingsDir, entry);
+	if (entries.some((existing) => getSettingsEntrySemanticKey(settingsDir, existing) === key)) return;
+	entries.push(entry);
+	managedEntries.push(entry);
+}
+
+function getSettingsEntrySemanticKey(settingsDir: string, entry: string): string {
+	const prefix = entry.startsWith("+") || entry.startsWith("-") || entry.startsWith("!") ? entry[0] : "";
+	const resolvedPath = resolveSettingsEntryPath(settingsDir, entry);
+	return `${prefix}:${resolvedPath ? normalizeAbsolutePath(resolvedPath) : normalizeManagedEntryText(entry)}`;
+}
+
+function normalizeManagedEntryText(entry: string): string {
+	return entry.replace(/\\/g, "/");
 }
 
 async function collectCodexPluginSkillEntries(sourceId: string, cacheRoot: string): Promise<Array<{ path: string; skillsRoot: string; externalSkillId: string }>> {
-	const pluginJsonPaths = await collectCodexPluginManifests(cacheRoot);
 	const entries: Array<{ path: string; skillsRoot: string; externalSkillId: string }> = [];
-	for (const pluginJsonPath of pluginJsonPaths) {
-		const plugin = await readCodexPluginManifest(pluginJsonPath);
-		if (!plugin || plugin.hasApps) continue;
-		const pluginRoot = dirname(dirname(pluginJsonPath));
-		const pluginName = getCodexPluginStableName(plugin, pluginRoot);
-		const skillsRoot = resolve(pluginRoot, plugin.skillsPath ?? "skills");
-		for (const path of await collectSkillPaths(skillsRoot)) {
-			const relativeSkillPath = normalizeConfigPath(relative(skillsRoot, path));
+	for (const plugin of await getCodexPluginInventory(cacheRoot)) {
+		for (const path of plugin.skillPaths) {
+			const relativeSkillPath = normalizeConfigPath(relative(plugin.skillsRoot, path));
 			entries.push({
 				path,
-				skillsRoot,
-				externalSkillId: `${sourceId}:${pluginName}:${relativeSkillPath}`,
+				skillsRoot: plugin.skillsRoot,
+				externalSkillId: `${sourceId}:${plugin.pluginName}:${relativeSkillPath}`,
 			});
 		}
 	}
 	return entries.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function getCodexPluginStableName(plugin: { name?: string; displayName?: string }, pluginRoot: string): string {
-	return (plugin.name || plugin.displayName || dirname(pluginRoot).split(/[\\/]/).pop() || pluginRoot).toLowerCase();
-}
-
-async function collectCodexPluginManifests(root: string): Promise<string[]> {
-	const manifests: string[] = [];
-	await walkDirectory(root, async (path, isDirectory) => {
-		if (!isDirectory) return false;
-		if (!path.endsWith(".codex-plugin")) return undefined;
-		const pluginJsonPath = resolve(path, "plugin.json");
-		try {
-			const info = await stat(pluginJsonPath);
-			if (info.isFile()) manifests.push(pluginJsonPath);
-		} catch {
-			// ignore malformed plugin folders
-		}
-		return false;
-	});
-	return manifests;
-}
-
-async function walkDirectory(root: string, visit: (path: string, isDirectory: boolean) => Promise<boolean | void>): Promise<void> {
-	let entries: Awaited<ReturnType<typeof readdir>>;
-	try {
-		entries = await readdir(root, { withFileTypes: true });
-	} catch {
-		return;
-	}
-	for (const entry of entries) {
-		const entryPath = resolve(root, entry.name);
-		const shouldContinue = await visit(entryPath, entry.isDirectory());
-		if (entry.isDirectory() && shouldContinue !== false) await walkDirectory(entryPath, visit);
-	}
-}
-
-async function readCodexPluginManifest(path: string): Promise<{ name?: string; displayName?: string; skillsPath?: string; hasApps: boolean } | undefined> {
-	try {
-		const raw = await readFile(path, "utf8");
-		const parsed = JSON.parse(raw) as { name?: unknown; skills?: unknown; apps?: unknown; interface?: { displayName?: unknown } };
-		return {
-			name: typeof parsed.name === "string" ? parsed.name : undefined,
-			displayName: typeof parsed.interface?.displayName === "string" ? parsed.interface.displayName : undefined,
-			skillsPath: typeof parsed.skills === "string" && parsed.skills.trim() ? parsed.skills : undefined,
-			hasApps: parsed.apps !== undefined,
-		};
-	} catch {
-		return undefined;
-	}
-}
-
-async function collectSkillPaths(path: string): Promise<string[]> {
-	try {
-		const info = await stat(path);
-		if (info.isFile()) return path.endsWith(".md") ? [path] : [];
-		if (!info.isDirectory()) return [];
-		const found = new Set<string>();
-		await walkSkillDirectory(path, found, true);
-		return Array.from(found);
-	} catch {
-		return [];
-	}
-}
-
-async function walkSkillDirectory(dir: string, found: Set<string>, includeRootFiles: boolean): Promise<void> {
-	let entries: Awaited<ReturnType<typeof readdir>>;
-	try {
-		entries = await readdir(dir, { withFileTypes: true });
-	} catch {
-		return;
-	}
-
-	for (const entry of entries) {
-		if (entry.name === "SKILL.md") {
-			const entryPath = resolve(dir, entry.name);
-			if (entry.isFile()) found.add(entryPath);
-			return;
-		}
-	}
-
-	for (const entry of entries) {
-		if (entry.name.startsWith(".")) continue;
-		if (entry.name === "node_modules") continue;
-		const entryPath = resolve(dir, entry.name);
-		if (entry.isDirectory()) {
-			await walkSkillDirectory(entryPath, found, false);
-			continue;
-		}
-		if (includeRootFiles && entry.isFile() && entry.name.endsWith(".md")) found.add(entryPath);
-	}
-}
-
-function upsertExternalSkillSourceRoot(entries: string[], settingsDir: string, sourcePath: string): void {
-	const resolvedSourcePath = resolveHomePath(sourcePath);
-	const rootEntry = sourcePath.replace(/\\/g, "/");
-	const explicitOverrides: string[] = [];
-	const nextEntries: string[] = [];
-	for (const entry of entries) {
-		const isExplicitOverride = entry.startsWith("+") || entry.startsWith("-") || entry.startsWith("!");
-		if (!isExplicitOverride) {
-			if (resolveSettingsEntryPath(settingsDir, entry) !== resolvedSourcePath) nextEntries.push(entry);
-			continue;
-		}
-		const resolvedEntryPath = resolveSettingsEntryPath(settingsDir, entry);
-		if (resolvedEntryPath && isPathWithinRoot(resolvedEntryPath, resolvedSourcePath)) {
-			explicitOverrides.push(entry);
-		} else {
-			nextEntries.push(entry);
-		}
-	}
-	nextEntries.push(rootEntry, ...explicitOverrides);
-	entries.splice(0, entries.length, ...nextEntries);
-}
-
-function upsertExternalSkillSourceDisable(entries: string[], settingsDir: string, sourcePath: string): void {
-	const resolvedSourcePath = resolveHomePath(sourcePath);
-	const disabledEntry = `-${sourcePath.replace(/\\/g, "/")}`;
-	const nextEntries = entries.filter((entry) => resolveSettingsEntryPath(settingsDir, entry) !== resolvedSourcePath);
-	nextEntries.push(disabledEntry);
-	entries.splice(0, entries.length, ...nextEntries);
-}
-
-function removeManagedExternalSkillSourceEntries(
-	entries: string[],
-	settingsDir: string,
-	resolvedSourcePath: string,
-	removePlainDescendants = false,
-	preserveExplicitOverrides = false,
-): void {
-	const normalizedRoot = normalizeAbsolutePath(resolvedSourcePath);
-	const nextEntries = entries.filter((entry) => {
-		const resolvedEntryPath = resolveSettingsEntryPath(settingsDir, entry);
-		if (!resolvedEntryPath) return true;
-		const normalizedEntryPath = normalizeAbsolutePath(resolvedEntryPath);
-		if (!(normalizedEntryPath === normalizedRoot || normalizedEntryPath.startsWith(`${normalizedRoot}/`))) return true;
-		const isExplicitOverride = entry.startsWith("+") || entry.startsWith("-") || entry.startsWith("!");
-		if (isExplicitOverride && preserveExplicitOverrides) return true;
-		const isRootEntry = normalizedEntryPath === normalizedRoot;
-		const isPlainDescendant = normalizedEntryPath.startsWith(`${normalizedRoot}/`) && !isExplicitOverride;
-		return !(isExplicitOverride || isRootEntry || (removePlainDescendants && isPlainDescendant));
-	});
-	entries.splice(0, entries.length, ...nextEntries);
 }
 
 function resolveSettingsEntryPath(settingsDir: string, entry: string): string | undefined {
@@ -439,12 +327,10 @@ function resolveSettingsEntryPath(settingsDir: string, entry: string): string | 
 	return resolve(settingsDir, normalizedEntry);
 }
 
-function normalizeAbsolutePath(path: string): string {
-	return path.replace(/\\/g, "/").toLowerCase();
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function isPathWithinRoot(path: string, root: string): boolean {
-	const normalizedPath = normalizeAbsolutePath(path);
-	const normalizedRoot = normalizeAbsolutePath(root);
-	return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+function normalizeAbsolutePath(path: string): string {
+	return path.replace(/\\/g, "/").toLowerCase();
 }

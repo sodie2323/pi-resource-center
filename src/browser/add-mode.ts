@@ -1,4 +1,5 @@
-import { type Input, type Theme, getKeybindings, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { type Input, type KeybindingsManager, truncateToWidth } from "@earendil-works/pi-tui";
 import { detectAddTargetSync, type AddPathCategory, type AddTarget } from "../resource/add-detect.js";
 import { getAddSuggestions, type AddSuggestion } from "./add-suggestions.js";
 import { moveSelection } from "./navigation.js";
@@ -87,13 +88,15 @@ export async function refreshAddSuggestions(state: AddModeState, inputValue: str
 export function applyAcceptedSuggestion(state: AddModeState, input: Input): AddModeState {
 	const suggestion = state.suggestions[state.selectedSuggestionIndex];
 	if (!suggestion) return state;
-	input.setValue(suggestion.value);
-	(input as Input & { cursor?: number }).cursor = suggestion.value.length;
+	// Input.setValue() preserves the previous cursor offset. Clear first and insert through
+	// the public input API so the accepted suggestion leaves the cursor at the end.
+	input.setValue("");
+	input.handleInput(suggestion.value);
 	return state;
 }
 
-export function handleAddModeNavigation(state: AddModeState, data: string): AddModeState {
-	const kb = getKeybindings();
+export function handleAddModeNavigation(state: AddModeState, data: string, keybindings: KeybindingsManager): AddModeState {
+	const kb = keybindings;
 	if (kb.matches(data, "tui.input.tab")) {
 		return { ...state, scope: state.scope === "project" ? "user" : "project" };
 	}

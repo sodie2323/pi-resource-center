@@ -4,7 +4,8 @@
 import { basename } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AddPathCategory } from "../resource/add-detect.js";
-import type { ResourceCenterSettings, ResourceSortMode } from "../settings.js";
+import type { ResourceCenterSettings } from "../settings.js";
+export type { ResourceSortMode } from "../settings.js";
 import type { ResourceCategory, ResourceItem, ResourceScope } from "../types.js";
 
 export const CATEGORY_ORDER: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];

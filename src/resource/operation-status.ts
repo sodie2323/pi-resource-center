@@ -32,17 +32,29 @@ export class ResourceOperationStatusController {
 	private frameIndex = 0;
 	private nextOperationId = 1;
 	private readonly activeOperations = new Map<OperationToken, OperationEntry>();
+	private readonly ui: ExtensionCommandContext["ui"];
+	private readonly theme: Theme;
+	private readonly callbacks: {
+		hasLoadingState: () => boolean;
+		onTick: () => void;
+		requestRender: () => void;
+		stopBrowserLoadingState: (operation?: OperationKind) => void;
+	};
 
 	constructor(
-		private readonly ui: ExtensionCommandContext["ui"],
-		private readonly theme: Theme,
-		private readonly callbacks: {
+		ui: ExtensionCommandContext["ui"],
+		theme: Theme,
+		callbacks: {
 			hasLoadingState: () => boolean;
 			onTick: () => void;
 			requestRender: () => void;
 			stopBrowserLoadingState: (operation?: OperationKind) => void;
 		},
-	) {}
+	) {
+		this.ui = ui;
+		this.theme = theme;
+		this.callbacks = callbacks;
+	}
 
 	public start(operation: OperationKind, text: string): OperationToken {
 		const token = `${operation}:${this.nextOperationId++}`;

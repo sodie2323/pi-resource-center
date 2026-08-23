@@ -51,12 +51,18 @@ test('sync writes disabled Codex plugin skills to Pi settings as force-excludes'
 test('sync removes Codex plugin skill roots when the integration is disabled', async () => {
   const { skillsRoot, skillPath } = await createCodexPluginFixture('disabled-superpowers');
   const settingsPath = join(home, '.pi', 'agent', 'settings.json');
+  const managedRoot = skillsRoot.replace(/\\/g, '/');
+  const managedDisable = `-${skillPath.replace(/\\/g, '/')}`;
   await writeJson(settingsPath, {
     skills: [
-      skillsRoot.replace(/\\/g, '/'),
-      `-${skillPath.replace(/\\/g, '/')}`,
+      managedRoot,
+      managedDisable,
       'C:/other/skills',
     ],
+  });
+  await writeJson(join(home, '.pi', 'agent', 'pi-resource-center-settings.json'), {
+    externalSkillSources: [codexPluginsSource],
+    externalSkillSyncEntries: [managedRoot, managedDisable],
   });
 
   const { syncExternalSkillSourcesToPiSettings } = await import('../src/settings/center.ts');
@@ -66,4 +72,51 @@ test('sync removes Codex plugin skill roots when the integration is disabled', a
 
   const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
   assert.deepEqual(saved.skills, ['C:/other/skills']);
+});
+
+test('legacy migration removes only exact roots and preserves user descendants', async () => {
+  const sourceRoot = join(home, '.config', 'opencode', 'skills').replace(/\\/g, '/');
+  const userDescendant = join(home, '.config', 'opencode', 'skills', 'personal', 'SKILL.md').replace(/\\/g, '/');
+  const source = {
+    id: 'opencode',
+    label: 'OpenCode',
+    path: '~/.config/opencode/skills',
+    enabled: true,
+    integration: 'skill-root',
+  };
+  const settingsPath = join(home, '.pi', 'agent', 'settings.json');
+  await writeJson(settingsPath, { skills: [sourceRoot, userDescendant] });
+  await writeJson(join(home, '.pi', 'agent', 'pi-resource-center-settings.json'), {
+    externalSkillSources: [source],
+  });
+
+  const { syncExternalSkillSourcesToPiSettings } = await import('../src/settings/center.ts');
+  await syncExternalSkillSourcesToPiSettings([source], [{ ...source, enabled: false }]);
+
+  const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.deepEqual(saved.skills, [userDescendant]);
+});
+
+test('sync removes only exact managed entries and preserves user descendants', async () => {
+  const sourceRoot = join(home, '.claude', 'skills').replace(/\\/g, '/');
+  const userDescendant = join(home, '.claude', 'skills', 'personal', 'SKILL.md').replace(/\\/g, '/');
+  const source = {
+    id: 'claude',
+    label: 'Claude',
+    path: '~/.claude/skills',
+    enabled: true,
+    integration: 'skill-root',
+  };
+  const settingsPath = join(home, '.pi', 'agent', 'settings.json');
+  await writeJson(settingsPath, { skills: [sourceRoot, userDescendant] });
+  await writeJson(join(home, '.pi', 'agent', 'pi-resource-center-settings.json'), {
+    externalSkillSources: [source],
+    externalSkillSyncEntries: [sourceRoot],
+  });
+
+  const { syncExternalSkillSourcesToPiSettings } = await import('../src/settings/center.ts');
+  await syncExternalSkillSourcesToPiSettings([source], [{ ...source, enabled: false }]);
+
+  const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.deepEqual(saved.skills, [userDescendant]);
 });

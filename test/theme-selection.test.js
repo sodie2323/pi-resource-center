@@ -13,10 +13,14 @@ test('falls back to the current Pi UI theme when settings do not contain an expl
   assert.equal(getSelectedTheme(settingsFile(undefined), settingsFile(undefined), 'dark'), 'dark');
 });
 
-test('project theme setting takes precedence over current Pi UI theme', () => {
-  assert.equal(getSelectedTheme(settingsFile('project-theme'), settingsFile('user-theme'), 'dark'), 'project-theme');
+test('current Pi UI theme takes precedence over saved settings', () => {
+  assert.equal(getSelectedTheme(settingsFile('project-theme'), settingsFile('user-theme'), 'dark'), 'dark');
 });
 
-test('user theme setting takes precedence over current Pi UI theme when project theme is unset', () => {
-  assert.equal(getSelectedTheme(settingsFile(undefined), settingsFile('user-theme'), 'dark'), 'user-theme');
+test('project theme setting is used when the current UI theme is unavailable', () => {
+  assert.equal(getSelectedTheme(settingsFile('project-theme'), settingsFile('user-theme')), 'project-theme');
+});
+
+test('user theme setting is used when project and current themes are unavailable', () => {
+  assert.equal(getSelectedTheme(settingsFile(undefined), settingsFile('user-theme')), 'user-theme');
 });

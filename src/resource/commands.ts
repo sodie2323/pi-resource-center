@@ -1,9 +1,9 @@
 /**
  * /resource 子命令处理逻辑。
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, SettingsManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { discoverResources } from "./discovery.js";
-import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isThemeItem } from "./capabilities.js";
+import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isResourceCenterPackage, isThemeItem } from "./capabilities.js";
 import { getResourceSearchCandidates } from "./identity.js";
 import {
 	getExposeSuccessMessage,
@@ -12,7 +12,7 @@ import {
 	getRemoveSuccessMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
-import { addPackageToSettings, addPathResourceToSettings, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import { USER_AGENT_DIR, addPathResourceToSettings, getProjectSettingsPath, getUserSettingsPath, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import { normalizeCategoryAlias } from "./completions.js";
 import { detectAddTarget, getAddTargetSuccessLabel, type AddPathCategory } from "./add-detect.js";
 import { buildSuccessOperationMessage } from "./operation-status.js";
@@ -22,7 +22,6 @@ import type { ResourceCategory, ResourceItem } from "../types.js";
 export async function handleAddCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
-	pi: ExtensionAPI,
 	refreshCompletions: () => Promise<void>,
 ): Promise<void> {
 	const parts = args.split(/\s+/).filter(Boolean);
@@ -47,7 +46,7 @@ export async function handleAddCommand(
 		return;
 	}
 	try {
-		const result = await addResourceFromInput(ctx.cwd, parts[0]!, scope, preferredCategory, pi, ctx.signal);
+		const result = await addResourceFromInput(ctx.cwd, parts[0]!, scope, preferredCategory, ctx.isProjectTrusted());
 		await refreshCompletions();
 		await reloadAfterSettingsChange(ctx, result.message);
 		return;
@@ -80,7 +79,7 @@ export async function handleMutateCommand(
 		return;
 	}
 
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
 	const matches = findResources(resources, query, category);
 	if (matches.length === 0) {
 		ctx.ui.notify(`No resource found for "${query}"`, "warning");
@@ -104,16 +103,21 @@ export async function handleMutateCommand(
 			ctx.ui.notify(getRemovedConventionFileMessage(filePath), "info");
 			return;
 		}
-		const settingsPath = await removeResourceFromSettings(ctx.cwd, item);
+		const settingsPath = await removeResourceFromSettings(ctx.cwd, item, ctx.isProjectTrusted());
 		await refreshCompletions();
 		await reloadAfterSettingsChange(ctx, getRemoveSuccessMessage(item, settingsPath));
+		return;
+	}
+
+	if (action === "disable" && isResourceCenterPackage(item)) {
+		ctx.ui.notify("Resource Center cannot disable its own package while it is running. Use pi config if this is intentional.", "warning");
 		return;
 	}
 
 	if (isThemeItem(item)) {
 		if (isContainedResource(item) && action === "disable") {
 			item.enabled = false;
-			const settingsPath = await toggleResourceInSettings(ctx.cwd, item);
+			const settingsPath = await toggleResourceInSettings(ctx.cwd, item, ctx.isProjectTrusted());
 			await refreshCompletions();
 			await reloadAfterSettingsChange(ctx, getToggleSuccessMessage(item, settingsPath));
 			return;
@@ -122,15 +126,23 @@ export async function handleMutateCommand(
 			ctx.ui.notify("Themes aren't disabled directly. Apply another theme instead.", "warning");
 			return;
 		}
-		const settingsPath = await setActiveTheme(ctx.cwd, item.name, item.scope);
-		ctx.ui.setTheme(item.name);
+		if (!ctx.ui.getTheme(item.name)) {
+			ctx.ui.notify(`Failed to apply theme ${item.name}: theme is not loaded`, "warning");
+			return;
+		}
+		const settingsPath = await setActiveTheme(ctx.cwd, item.name, item.scope, ctx.isProjectTrusted());
+		const themeResult = ctx.ui.setTheme(item.name);
+		if (!themeResult.success) {
+			ctx.ui.notify(`Theme setting was saved, but the UI switch failed: ${themeResult.error}`, "warning");
+			return;
+		}
 		await refreshCompletions();
 		ctx.ui.notify(getToggleSuccessMessage(item, settingsPath), "info");
 		return;
 	}
 
 	item.enabled = action === "enable";
-	const settingsPath = await toggleResourceInSettings(ctx.cwd, item);
+	const settingsPath = await toggleResourceInSettings(ctx.cwd, item, ctx.isProjectTrusted());
 	await refreshCompletions();
 	await reloadAfterSettingsChange(ctx, getToggleSuccessMessage(item, settingsPath));
 }
@@ -157,7 +169,7 @@ export async function handleExposureCommand(
 		return;
 	}
 
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name);
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
 	const matches = findResources(resources, query, category);
 	if (matches.length === 0) {
 		ctx.ui.notify(`No resource found for "${query}"`, "warning");
@@ -191,33 +203,50 @@ export async function addResourceFromInput(
 	input: string,
 	scope: "project" | "user" = "project",
 	preferredCategory?: AddPathCategory,
-	pi?: ExtensionAPI,
-	signal?: AbortSignal,
+	projectTrusted = true,
 ): Promise<AddResourceResult> {
+	if (scope === "project" && !projectTrusted) {
+		throw new Error("Project is not trusted; refusing to add project resources");
+	}
 	const target = await detectAddTarget(input, cwd, { preferredCategory });
 	if (target.kind === "invalid") throw new Error(target.reason);
 	if (target.kind === "ambiguous") {
 		throw new Error(`Couldn't infer resource type for ${target.path}. Choose one of: ${target.candidates.join(", ")}`);
 	}
 	let installOutput: string | undefined;
-	if (target.kind === "package" && pi) installOutput = await installPackageBeforePersisting(target.source, scope, pi, signal);
-	const settingsPath = target.kind === "package"
-		? await addPackageToSettings(cwd, target.source, scope)
-		: await addPathResourceToSettings(cwd, target.category, target.path, scope);
+	let settingsPath: string;
+	if (target.kind === "package") {
+		installOutput = await installPackageAndPersist(cwd, target.source, scope, projectTrusted);
+		settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
+	} else {
+		settingsPath = await addPathResourceToSettings(cwd, target.category, target.path, scope, projectTrusted);
+	}
 	const message = target.kind === "package" && installOutput !== undefined
 		? buildSuccessOperationMessage("Added package", target.source, installOutput)
 		: `Added ${getAddTargetSuccessLabel(target)} · ${settingsPath}`;
 	return { message, settingsPath, target, installOutput };
 }
 
-async function installPackageBeforePersisting(source: string, scope: "project" | "user", pi: ExtensionAPI, signal?: AbortSignal): Promise<string> {
-	const cliEntry = process.argv[1];
-	if (!cliEntry) throw new Error("Couldn't determine the pi CLI entrypoint");
-	const installArgs = [cliEntry, "install", source, ...(scope === "project" ? ["-l"] : [])];
-	const result = await pi.exec(process.execPath, installArgs, { signal });
-	const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-	if (result.code !== 0) throw new Error(output || `Failed to install package ${source}`);
-	return output;
+async function installPackageAndPersist(cwd: string, source: string, scope: "project" | "user", projectTrusted: boolean): Promise<string> {
+	const { packageManager, settingsManager } = createPackageManagerRuntime(cwd, projectTrusted);
+	await packageManager.installAndPersist(source, { local: scope === "project" });
+	await settingsManager.flush();
+	return "";
+}
+
+export async function updatePackageSource(cwd: string, source: string, projectTrusted: boolean): Promise<void> {
+	await createPackageManagerRuntime(cwd, projectTrusted).packageManager.update(source);
+}
+
+function createPackageManagerRuntime(cwd: string, projectTrusted: boolean): {
+	packageManager: DefaultPackageManager;
+	settingsManager: SettingsManager;
+} {
+	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR, { projectTrusted });
+	return {
+		packageManager: new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager }),
+		settingsManager,
+	};
 }
 
 export async function reloadAfterSettingsChange(ctx: ExtensionCommandContext, message: string, reloadBehavior?: ReloadBehavior): Promise<void> {

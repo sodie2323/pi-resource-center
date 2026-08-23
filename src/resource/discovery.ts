@@ -2,6 +2,7 @@
  * 发现并构建资源索引，包括 package、extensions、skills、prompts 和 themes。
  */
 import { readFile, readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import {
 	DefaultPackageManager,
@@ -29,6 +30,7 @@ import {
 	USER_AGENT_DIR,
 } from "../settings.js";
 import { getPackageKey, getPackageResourceId } from "./identity.js";
+import { getCodexPluginInventory } from "./codex-plugin-inventory.js";
 import type {
 	FileResourceItem,
 	PackageEnabledSummary,
@@ -46,8 +48,18 @@ const RESOURCE_CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensio
 type DiscoveryCaches = {
 	mtimeByPath: Map<string, number | undefined>;
 	packageDescriptionByPath: Map<string, string | undefined>;
+	packageVersionByPath: Map<string, string | undefined>;
 	skillDescriptionByPath: Map<string, string | undefined>;
 	promptMetadataByPath: Map<string, { description?: string; argumentHint?: string }>;
+	themeNameByPath: Map<string, string | undefined>;
+};
+
+const sessionMetadataCaches = {
+	packageDescriptionByPath: new Map<string, string | undefined>(),
+	packageVersionByPath: new Map<string, string | undefined>(),
+	skillDescriptionByPath: new Map<string, string | undefined>(),
+	promptMetadataByPath: new Map<string, { description?: string; argumentHint?: string }>(),
+	themeNameByPath: new Map<string, string | undefined>(),
 };
 
 type ExternalPluginOwner = {
@@ -64,16 +76,21 @@ type ExternalSkillIdentity = {
 	relativeSkillPath: string;
 };
 
-export async function discoverResources(cwd: string, currentTheme?: string): Promise<ResourceIndex> {
+export interface DiscoverResourcesOptions {
+	projectTrusted?: boolean;
+	syncExternalSkills?: boolean;
+}
+
+export async function discoverResources(cwd: string, currentTheme?: string, options: DiscoverResourcesOptions = {}): Promise<ResourceIndex> {
 	const caches: DiscoveryCaches = {
 		mtimeByPath: new Map(),
-		packageDescriptionByPath: new Map(),
-		skillDescriptionByPath: new Map(),
-		promptMetadataByPath: new Map(),
+		...sessionMetadataCaches,
 	};
 	const resourceCenterSettings = await readResourceCenterSettings();
-	await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources, resourceCenterSettings.disabledExternalSkills);
-	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR);
+	if (options.syncExternalSkills !== false) {
+		await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources, resourceCenterSettings.disabledExternalSkills);
+	}
+	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR, { projectTrusted: options.projectTrusted ?? true });
 	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
 	const resolvedPaths = await packageManager.resolve();
 	const projectSettings = settingsManager.getProjectSettings();
@@ -84,10 +101,10 @@ export async function discoverResources(cwd: string, currentTheme?: string): Pro
 		currentTheme,
 	);
 	const packageCounts = buildPackageCountMap(resolvedPaths);
-	const packageEnabledCounts = buildPackageEnabledSummaryMap(resolvedPaths, selectedTheme);
+	const packageEnabledCounts = await buildPackageEnabledSummaryMap(resolvedPaths, selectedTheme, caches);
 	const packageDescriptions = await buildPackageDescriptionMap(resolvedPaths, caches);
 	const packageInstallPaths = buildPackageInstallPathMap(resolvedPaths);
-	const packageVersions = await buildPackageVersionMap(resolvedPaths, packageInstallPaths, caches);
+	const packageVersions = await buildPackageVersionMap(packageInstallPaths, caches);
 	const exposedResources = await getExposedResources(cwd);
 	const userSettingsFile = await readSettingsFile(getUserSettingsPath());
 	const externalPluginOwners = await collectExternalPluginOwners(resourceCenterSettings.externalSkillSources);
@@ -121,8 +138,8 @@ export async function discoverResources(cwd: string, currentTheme?: string): Pro
 	const categories: ResourceIndex["categories"] = {
 		packages: sortItems([...projectPackages, ...userPackages]),
 		skills: sortItems([...resolvedSkillItems, ...externalSkillItems]),
-		extensions: await mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners),
-		prompts: await mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners),
+		extensions: await mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills),
+		prompts: await mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills),
 		themes: await buildThemeItems(resolvedPaths.themes, selectedTheme, caches),
 	};
 
@@ -277,7 +294,7 @@ async function createThemeItem(resource: ResolvedResource, selectedTheme: string
 		throw new Error(`Unsupported resource scope: ${scope}`);
 	}
 
-	const name = basename(resource.path, extname(resource.path));
+	const name = (await readThemeName(resource.path, caches)) ?? basename(resource.path, extname(resource.path));
 	return {
 		category: "themes" as const,
 		id: `themes:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
@@ -298,20 +315,12 @@ async function collectExternalPluginOwners(sources: ExternalSkillSourceSetting[]
 	for (const source of sources) {
 		if (!source.enabled) continue;
 		if (source.integration !== "codex-plugin-cache" && source.id !== "codex-plugins") continue;
-		const pluginJsonPaths = await collectCodexPluginManifests(resolveHomePath(source.path));
-		for (const pluginJsonPath of pluginJsonPaths) {
-			const plugin = await readCodexPluginManifest(pluginJsonPath);
-			if (!plugin || plugin.hasApps) continue;
-			const pluginRoot = dirname(dirname(pluginJsonPath));
-			const pluginName = getCodexPluginStableName(plugin, pluginRoot);
-			const skillsRoot = resolve(pluginRoot, plugin.skillsPath ?? "skills");
-			const skillPaths = await collectSkillPaths(skillsRoot);
-			if (skillPaths.length === 0) continue;
+		for (const plugin of await getCodexPluginInventory(resolveHomePath(source.path))) {
 			owners.push({
 				externalSourceId: source.id,
-				externalPluginId: buildExternalPluginId(source.id, pluginName),
-				externalPluginName: pluginName,
-				skillsRoot,
+				externalPluginId: buildExternalPluginId(source.id, plugin.pluginName),
+				externalPluginName: plugin.pluginName,
+				skillsRoot: plugin.skillsRoot,
 			});
 		}
 	}
@@ -324,10 +333,6 @@ function inferExternalPluginOwner(path: string, owners: ExternalPluginOwner[]): 
 		const rootPath = normalizeConfigPath(owner.skillsRoot).toLowerCase();
 		return normalizedPath === rootPath || normalizedPath.startsWith(`${rootPath}/`);
 	});
-}
-
-function getCodexPluginStableName(plugin: { name?: string; displayName?: string }, pluginRoot: string): string {
-	return (plugin.name || plugin.displayName || basename(pluginRoot)).toLowerCase();
 }
 
 function buildExternalPluginId(sourceId: string, pluginName: string): string {
@@ -409,7 +414,6 @@ async function discoverCodexPluginSkills(sourceId: string, cacheRoot: string, _s
 	externalPluginName?: string;
 	externalSkillId?: string;
 }>> {
-	const pluginJsonPaths = await collectCodexPluginManifests(cacheRoot);
 	const skills: Array<{
 		path: string;
 		sourceLabel?: string;
@@ -418,95 +422,28 @@ async function discoverCodexPluginSkills(sourceId: string, cacheRoot: string, _s
 		externalPluginName?: string;
 		externalSkillId?: string;
 	}> = [];
-	for (const pluginJsonPath of pluginJsonPaths) {
-		const plugin = await readCodexPluginManifest(pluginJsonPath);
-		if (!plugin || plugin.hasApps) continue;
-		const pluginRoot = dirname(dirname(pluginJsonPath));
-		const skillsRoot = resolve(pluginRoot, plugin.skillsPath ?? "skills");
-		const pluginName = getCodexPluginStableName(plugin, pluginRoot);
-		const pluginLabel = plugin.displayName || plugin.name || basename(pluginRoot);
+	for (const plugin of await getCodexPluginInventory(cacheRoot)) {
 		const owner = {
 			externalSourceId: sourceId,
-			externalPluginId: buildExternalPluginId(sourceId, pluginName),
-			externalPluginName: pluginName,
-			skillsRoot,
+			externalPluginId: buildExternalPluginId(sourceId, plugin.pluginName),
+			externalPluginName: plugin.pluginName,
+			skillsRoot: plugin.skillsRoot,
 		};
-		for (const path of await collectSkillPaths(skillsRoot)) {
+		for (const path of plugin.skillPaths) {
 			const identity = buildExternalSkillIdentity(owner, path);
 			skills.push({
 				path,
-				sourceLabel: `codex:${pluginName}`,
+				sourceLabel: `codex:${plugin.pluginName}`,
 				externalPluginId: identity.externalPluginId,
-				externalPluginName: pluginLabel,
+				externalPluginName: plugin.pluginLabel,
 				externalSkillId: identity.externalSkillId,
-				description: plugin.shortDescription || plugin.description
-					? `Codex plugin skill from ${pluginLabel}. ${plugin.shortDescription ?? plugin.description}`
-					: `Codex plugin skill from ${pluginLabel}.`,
+				description: plugin.description
+					? `Codex plugin skill from ${plugin.pluginLabel}. ${plugin.description}`
+					: `Codex plugin skill from ${plugin.pluginLabel}.`,
 			});
 		}
 	}
 	return skills;
-}
-
-async function collectCodexPluginManifests(root: string): Promise<string[]> {
-	const manifests: string[] = [];
-	await walkDirectory(root, async (path, isDirectory) => {
-		if (!isDirectory) return false;
-		if (!path.endsWith(".codex-plugin")) return undefined;
-		const pluginJsonPath = resolve(path, "plugin.json");
-		try {
-			const info = await stat(pluginJsonPath);
-			if (info.isFile()) manifests.push(pluginJsonPath);
-		} catch {
-			// ignore malformed plugin folders
-		}
-		return false;
-	});
-	return manifests;
-}
-
-async function walkDirectory(root: string, visit: (path: string, isDirectory: boolean) => Promise<boolean | void>): Promise<void> {
-	let entries: Awaited<ReturnType<typeof readdir>>;
-	try {
-		entries = await readdir(root, { withFileTypes: true });
-	} catch {
-		return;
-	}
-	for (const entry of entries) {
-		const entryPath = resolve(root, entry.name);
-		const shouldContinue = await visit(entryPath, entry.isDirectory());
-		if (entry.isDirectory() && shouldContinue !== false) await walkDirectory(entryPath, visit);
-	}
-}
-
-async function readCodexPluginManifest(path: string): Promise<{
-	name?: string;
-	displayName?: string;
-	description?: string;
-	shortDescription?: string;
-	skillsPath?: string;
-	hasApps: boolean;
-} | undefined> {
-	try {
-		const raw = await readFile(path, "utf8");
-		const parsed = JSON.parse(raw) as {
-			name?: unknown;
-			description?: unknown;
-			skills?: unknown;
-			apps?: unknown;
-			interface?: { displayName?: unknown; shortDescription?: unknown };
-		};
-		return {
-			name: typeof parsed.name === "string" ? parsed.name : undefined,
-			displayName: typeof parsed.interface?.displayName === "string" ? parsed.interface.displayName : undefined,
-			description: typeof parsed.description === "string" ? parsed.description : undefined,
-			shortDescription: typeof parsed.interface?.shortDescription === "string" ? parsed.interface.shortDescription : undefined,
-			skillsPath: typeof parsed.skills === "string" && parsed.skills.trim() ? parsed.skills : undefined,
-			hasApps: parsed.apps !== undefined,
-		};
-	} catch {
-		return undefined;
-	}
 }
 
 async function collectSkillPaths(path: string): Promise<string[]> {
@@ -525,7 +462,7 @@ async function collectSkillPaths(path: string): Promise<string[]> {
 }
 
 async function walkSkillDirectory(dir: string, found: Set<string>, includeRootFiles: boolean): Promise<void> {
-	let entries: Awaited<ReturnType<typeof readdir>>;
+	let entries: Dirent[];
 	try {
 		entries = await readdir(dir, { withFileTypes: true });
 	} catch {
@@ -568,10 +505,11 @@ function buildPackageCountMap(resolvedPaths: ResolvedPaths): Map<string, Package
 	return counts;
 }
 
-function buildPackageEnabledSummaryMap(
+async function buildPackageEnabledSummaryMap(
 	resolvedPaths: ResolvedPaths,
 	selectedTheme: string | undefined,
-): Map<string, PackageEnabledSummary> {
+	caches: DiscoveryCaches,
+): Promise<Map<string, PackageEnabledSummary>> {
 	const summaries = new Map<string, PackageEnabledSummary>();
 	for (const category of RESOURCE_CATEGORIES) {
 		if (category === "packages") continue;
@@ -581,7 +519,7 @@ function buildPackageEnabledSummaryMap(
 			const current = summaries.get(key) ?? { enabledCount: 0, totalCount: 0 };
 			current.totalCount += 1;
 			const isEnabled = category === "themes"
-				? basename(resource.path, extname(resource.path)) === selectedTheme
+				? ((await readThemeName(resource.path, caches)) ?? basename(resource.path, extname(resource.path))) === selectedTheme
 				: resource.enabled;
 			if (isEnabled) {
 				current.enabledCount += 1;
@@ -625,7 +563,6 @@ async function buildPackageDescriptionMap(resolvedPaths: ResolvedPaths, caches: 
 }
 
 async function buildPackageVersionMap(
-	resolvedPaths: ResolvedPaths,
 	packageInstallPaths: Map<string, string>,
 	caches: DiscoveryCaches,
 ): Promise<Map<string, string>> {
@@ -640,29 +577,31 @@ async function buildPackageVersionMap(
 }
 
 async function readPackageDescription(packageJsonPath: string, caches: DiscoveryCaches): Promise<string | undefined> {
-	if (caches.packageDescriptionByPath.has(packageJsonPath)) {
-		return caches.packageDescriptionByPath.get(packageJsonPath);
-	}
+	const cacheKey = await getMetadataCacheKey(packageJsonPath, caches);
+	if (caches.packageDescriptionByPath.has(cacheKey)) return caches.packageDescriptionByPath.get(cacheKey);
+	let description: string | undefined;
 	try {
-		const raw = await readFile(packageJsonPath, "utf8");
-		const parsed = JSON.parse(raw) as { description?: unknown };
-		const description = typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : undefined;
-		caches.packageDescriptionByPath.set(packageJsonPath, description);
-		return description;
+		const parsed = JSON.parse(await readFile(packageJsonPath, "utf8")) as { description?: unknown };
+		description = typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : undefined;
 	} catch {
-		caches.packageDescriptionByPath.set(packageJsonPath, undefined);
-		return undefined;
+		// Missing or invalid package metadata is represented as an empty cache value.
 	}
+	setMetadataCacheValue(caches.packageDescriptionByPath, packageJsonPath, cacheKey, description);
+	return description;
 }
 
 async function readPackageVersion(packageJsonPath: string, caches: DiscoveryCaches): Promise<string | undefined> {
+	const cacheKey = await getMetadataCacheKey(packageJsonPath, caches);
+	if (caches.packageVersionByPath.has(cacheKey)) return caches.packageVersionByPath.get(cacheKey);
+	let version: string | undefined;
 	try {
-		const raw = await readFile(packageJsonPath, "utf8");
-		const parsed = JSON.parse(raw) as { version?: unknown };
-		return typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : undefined;
+		const parsed = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+		version = typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : undefined;
 	} catch {
-		return undefined;
+		// Missing or invalid package metadata is represented as an empty cache value.
 	}
+	setMetadataCacheValue(caches.packageVersionByPath, packageJsonPath, cacheKey, version);
+	return version;
 }
 
 function getRelativeResourcePath(resource: ResolvedResource): string | undefined {
@@ -715,41 +654,51 @@ function inferName(category: Exclude<ResourceCategory, "packages" | "themes">, p
 	return basename(path);
 }
 
-async function readSkillDescription(path: string, caches: DiscoveryCaches): Promise<string | undefined> {
-	if (caches.skillDescriptionByPath.has(path)) {
-		return caches.skillDescriptionByPath.get(path);
-	}
+async function readThemeName(path: string, caches: DiscoveryCaches): Promise<string | undefined> {
+	const cacheKey = await getMetadataCacheKey(path, caches);
+	if (caches.themeNameByPath.has(cacheKey)) return caches.themeNameByPath.get(cacheKey);
+	let name: string | undefined;
 	try {
-		const raw = await readFile(path, "utf8");
-		const { frontmatter } = parseFrontmatter<{ description?: string }>(raw);
-		const description = typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description.trim() : undefined;
-		caches.skillDescriptionByPath.set(path, description);
-		return description;
+		const parsed = JSON.parse(await readFile(path, "utf8")) as { name?: unknown };
+		if (typeof parsed.name === "string" && parsed.name.trim()) name = parsed.name.trim();
 	} catch {
-		caches.skillDescriptionByPath.set(path, undefined);
-		return undefined;
+		// Pi will surface invalid theme diagnostics during its own resource loading.
 	}
+	setMetadataCacheValue(caches.themeNameByPath, path, cacheKey, name);
+	return name;
+}
+
+async function readSkillDescription(path: string, caches: DiscoveryCaches): Promise<string | undefined> {
+	const cacheKey = await getMetadataCacheKey(path, caches);
+	if (caches.skillDescriptionByPath.has(cacheKey)) return caches.skillDescriptionByPath.get(cacheKey);
+	let description: string | undefined;
+	try {
+		const { frontmatter } = parseFrontmatter<{ description?: string }>(await readFile(path, "utf8"));
+		description = typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description.trim() : undefined;
+	} catch {
+		// Missing or invalid frontmatter is represented as an empty cache value.
+	}
+	setMetadataCacheValue(caches.skillDescriptionByPath, path, cacheKey, description);
+	return description;
 }
 
 async function readPromptMetadata(path: string, caches: DiscoveryCaches): Promise<{ description?: string; argumentHint?: string } | undefined> {
-	if (caches.promptMetadataByPath.has(path)) {
-		return caches.promptMetadataByPath.get(path);
-	}
+	const cacheKey = await getMetadataCacheKey(path, caches);
+	if (caches.promptMetadataByPath.has(cacheKey)) return caches.promptMetadataByPath.get(cacheKey);
+	let metadata: { description?: string; argumentHint?: string } = {};
 	try {
-		const raw = await readFile(path, "utf8");
-		const { frontmatter } = parseFrontmatter<{ description?: string; "argument-hint"?: string }>(raw);
-		const metadata = {
+		const { frontmatter } = parseFrontmatter<{ description?: string; "argument-hint"?: string }>(await readFile(path, "utf8"));
+		metadata = {
 			description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description.trim() : undefined,
 			argumentHint: typeof frontmatter["argument-hint"] === "string" && frontmatter["argument-hint"].trim()
 				? frontmatter["argument-hint"].trim()
 				: undefined,
 		};
-		caches.promptMetadataByPath.set(path, metadata);
-		return metadata;
 	} catch {
-		caches.promptMetadataByPath.set(path, {});
-		return undefined;
+		// Missing or invalid frontmatter is represented as empty metadata.
 	}
+	setMetadataCacheValue(caches.promptMetadataByPath, path, cacheKey, metadata);
+	return metadata;
 }
 
 function buildResourceDescription(
@@ -769,6 +718,18 @@ function buildResourceDescription(
 	const location = scope === "project" ? "project" : "user";
 	const origin = metadata.origin === "package" ? `provided by package ${metadata.source}` : `${normalizeSource(metadata)} path`;
 	return `${categoryText} in ${location} scope, ${origin}. Path: ${path}`;
+}
+
+async function getMetadataCacheKey(path: string, caches: DiscoveryCaches): Promise<string> {
+	return `${path}\0${(await safeMtimeMs(path, caches)) ?? "missing"}`;
+}
+
+function setMetadataCacheValue<T>(cache: Map<string, T>, path: string, cacheKey: string, value: T): void {
+	const prefix = `${path}\0`;
+	for (const existingKey of cache.keys()) {
+		if (existingKey !== cacheKey && existingKey.startsWith(prefix)) cache.delete(existingKey);
+	}
+	cache.set(cacheKey, value);
 }
 
 async function safeMtimeMs(path: string | undefined, caches: DiscoveryCaches): Promise<number | undefined> {

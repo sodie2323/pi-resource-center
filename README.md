@@ -158,7 +158,7 @@ If you update the local package after installing it, run:
 ### Core command groups
 
 - `add` — register a package source or local resource path in project or user settings
-- `enable` / `disable` — toggle packages or resources
+- `enable` / `disable` — toggle packages or individual resources, including package-contained resources
 - `remove` — remove configured resources from settings
 - `expose` / `hide` — show or hide package-contained resources in top-level categories
 - `sync` — re-run discovery and refresh the current resource index
@@ -215,6 +215,7 @@ Examples:
 
 ```bash
 /resource disable package npm:@scope/some-pi-package
+/resource disable skill review
 /resource enable extension resource-center/index.ts
 /resource remove theme my-theme
 /resource expose prompt prompts/review.md
@@ -253,7 +254,7 @@ Examples:
 - `Up/Down` — move selection
 - `PageUp/PageDown` — jump through the list
 - `Enter` — open resource details
-- `Space` — enable/disable or apply the selected item
+- `Space` — enable/disable or apply the selected item; package rows retain their `[enabled/total]` summary
 - `A` — add a package source or local resource
 - `P` — pin or unpin the selected item
 - `Shift+S` — open Resource Center settings
@@ -271,6 +272,8 @@ Pinned resources are kept at the top of sorted lists.
 - `Esc` — return to the list
 
 For packages, the detail view includes a **Manage Resources** action that opens the package contents view, where you can browse contained extensions, skills, prompts, and themes, search within the package, and manage them directly.
+
+Whole-package enable/disable remains available from the package row and detail view. It intentionally favors the common all-on/all-off workflow: disabling replaces package resource filters with empty category arrays, while enabling restores the plain package source and its default loading behavior. This clears fine-grained `autoload`, glob, and `+/-/!` filters. Use **Manage Resources** instead when those filters must be preserved. Resource Center blocks disabling its own package from inside `/resource`; use Pi's native `pi config` if that is intentional.
 
 For package-contained extensions, skills, and prompts, the detail view also includes a **Show in Category** / **Hide from Category** action.
 
@@ -309,7 +312,9 @@ Resource Center stores its own UI preferences and "exposed" package resource sta
 - Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
 - macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
 
-This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, stable disabled external skill IDs, configured external skill sources, and the reload behavior used after settings changes.
+When `PI_CODING_AGENT_DIR` is set, Resource Center uses that directory instead of the default `~/.pi/agent` location.
+
+This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, stable disabled external skill IDs, configured external skill sources, exact external-skill sync entries, and the reload behavior used after settings changes.
 
 Stale `pinned` and `exposedResources` entries are pruned automatically when the plugin refreshes and before settings are saved.
 
@@ -327,6 +332,7 @@ The package discovers resources in both **project** and **user** scope.
   - `skills/`
   - `prompts/`
   - `themes/`
+- Agent Skills standard folders under `.agents/skills/` in the current directory and its ancestors
 
 ### User scope
 
@@ -340,7 +346,7 @@ The package discovers resources in both **project** and **user** scope.
 
 ### Package sources
 
-Configured package sources are read from Pi settings. For local package sources, the browser also inspects contained resources and shows counts for:
+Configured package sources are read from Pi settings, including filtered package entries and `autoload: false` project deltas. For local package sources, the browser also inspects contained resources and shows counts for:
 
 - extensions
 - skills
@@ -366,10 +372,15 @@ Supported remote source prefixes:
 
 ## Requirements
 
+- Node.js `>=22.19.0`
+- Pi `>=0.79.7`
+
 Peer dependencies:
 
-- `@earendil-works/pi-coding-agent`
-- `@earendil-works/pi-tui`
+- `@earendil-works/pi-coding-agent >=0.79.7`
+- `@earendil-works/pi-tui >=0.79.7`
+
+Resource Center follows Pi's project trust decision. When a project is not trusted, project-local settings, packages, and resources are not discovered or modified.
 
 ## Notes
 

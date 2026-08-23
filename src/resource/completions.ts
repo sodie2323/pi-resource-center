@@ -4,7 +4,8 @@
 import { access, readdir } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 import { discoverResources } from "./discovery.js";
-import type { ResourceCategory, ResourceItem } from "../types.js";
+import { PROJECT_AGENT_DIR } from "../settings.js";
+import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
 
 const ROOT_COMPLETIONS = [
 	{ value: "add ", label: "add", description: "Add a package source to project or user settings" },
@@ -76,14 +77,26 @@ export class ResourceCompletionProvider {
 		prompts: [],
 	};
 	private completionCwd = process.cwd();
+	private projectTrusted = true;
+	private initialized = false;
 
 	setCwd(cwd: string): void {
+		if (this.completionCwd !== cwd) this.initialized = false;
 		this.completionCwd = cwd;
 	}
 
-	async refresh(cwd: string): Promise<void> {
+	setProjectTrusted(projectTrusted: boolean): void {
+		if (this.projectTrusted !== projectTrusted) this.initialized = false;
+		this.projectTrusted = projectTrusted;
+	}
+
+	async refresh(cwd: string, currentTheme?: string): Promise<void> {
 		this.completionCwd = cwd;
-		const resources = await discoverResources(cwd);
+		const resources = await discoverResources(cwd, currentTheme, { projectTrusted: this.projectTrusted });
+		this.updateFromResources(resources);
+	}
+
+	updateFromResources(resources: ResourceIndex): void {
 		this.resourceCompletionCache = {
 			packages: uniqueCompletionValues(resources.categories.packages),
 			skills: uniqueCompletionValues(resources.categories.skills),
@@ -96,6 +109,7 @@ export class ResourceCompletionProvider {
 			extensions: uniqueCompletionValues(resources.categories.extensions.filter((item) => item.packageSource)),
 			prompts: uniqueCompletionValues(resources.categories.prompts.filter((item) => item.packageSource)),
 		};
+		this.initialized = true;
 	}
 
 	async getArgumentCompletions(prefix: string) {
@@ -108,6 +122,9 @@ export class ResourceCompletionProvider {
 
 		const command = parts[0]!;
 		const commandPrefix = `${command} `;
+		if (!this.initialized && ["remove", "enable", "disable", "expose", "hide"].includes(command)) {
+			await this.refresh(this.completionCwd);
+		}
 
 		if (command === "add") {
 			if (parts.length === 1) return buildScopedCompletionItems(ADD_SOURCE_COMPLETIONS, "", commandPrefix);
@@ -246,7 +263,7 @@ async function scoreLocalPackageDirectory(parentDir: string, name: string): Prom
 	if (name.startsWith("pi-")) score += 25;
 	if (await pathExists(resolve(dirPath, "extensions"))) score += 15;
 	if (await pathExists(resolve(dirPath, "skills"))) score += 10;
-	if (await pathExists(resolve(dirPath, ".pi"))) score += 10;
+	if (await pathExists(resolve(dirPath, PROJECT_AGENT_DIR))) score += 10;
 	return score;
 }
 
