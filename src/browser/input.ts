@@ -4,7 +4,7 @@
 import type { Input, KeybindingsManager, SettingsList } from "@earendil-works/pi-tui";
 import { getDetailActions } from "./actions.js";
 import { moveSelection } from "./navigation.js";
-import { canExposeResource, canManagePackageContents, isPackageItem, supportsPackageUpdate } from "../resource/capabilities.js";
+import { canExposeResource, canManagePackageContents, isPackageItem, isToolItem, supportsPackageUpdate } from "../resource/capabilities.js";
 import { getPackageResourceId } from "../resource/identity.js";
 import type { BrowserListEntry, BrowserMode, PackageContentCategory, PackageGroupEntry } from "./shared.js";
 import type { ResourceItem } from "../types.js";
@@ -38,17 +38,17 @@ export function handleListInput(data: string, args: {
 	if (kb.matches(data, "tui.select.pageDown")) return args.onMoveSelection(args.maxVisible);
 	if (kb.matches(data, "tui.select.confirm")) return args.onOpenSelectedItem();
 	if (data === "P") {
-		if (args.selectedEntry?.kind === "resource" || args.selectedEntry?.kind === "plugin-child") {
+		if ((args.selectedEntry?.kind === "resource" || args.selectedEntry?.kind === "resource-child") && !isToolItem(args.selectedEntry.item)) {
 			args.onTogglePinned(args.selectedEntry.item);
 		}
 		return;
 	}
 	if (data === "A") return void args.onAddResource?.();
 	if (data === " ") {
-		if (args.selectedEntry?.kind === "plugin-group") {
+		if (args.selectedEntry?.kind === "resource-group") {
 			const enable = args.selectedEntry.enabledCount !== args.selectedEntry.totalCount;
-			args.onToggleGroup?.(args.selectedEntry.items, enable, args.selectedEntry.pluginName);
-		} else if (args.selectedEntry?.kind === "resource" || args.selectedEntry?.kind === "plugin-child") {
+			args.onToggleGroup?.(args.selectedEntry.items, enable, args.selectedEntry.groupName);
+		} else if (args.selectedEntry?.kind === "resource" || args.selectedEntry?.kind === "resource-child") {
 			args.onToggleItem(args.selectedEntry.item);
 		}
 		return;
@@ -79,7 +79,7 @@ export function handleDetailInput(data: string, args: {
 	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
 	if (data === "P") {
-		if (args.detailItem) args.onTogglePinned(args.detailItem);
+		if (args.detailItem && !isToolItem(args.detailItem)) args.onTogglePinned(args.detailItem);
 		return;
 	}
 	if (data === "A") return void args.onAddResource?.();

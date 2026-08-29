@@ -1,7 +1,7 @@
 {
 	"name": "pi-resource-center",
-	"version": "0.3.0",
-	"description": "Pi package for browsing packages, skills, extensions, prompts, and themes",
+	"version": "0.3.1",
+	"description": "Pi package for browsing packages, skills, extensions, prompts, themes, and tools",
 	"type": "module",
 	"engines": {
 		"node": ">=22.19.0"

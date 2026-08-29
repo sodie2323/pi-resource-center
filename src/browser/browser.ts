@@ -129,7 +129,7 @@ export class ResourceBrowser implements Component, Focusable {
 		| undefined;
 	private confirmingRemove = false;
 	private actionMessage: { action: DetailAction; type: "info" | "warning" | "error"; text: string } | undefined;
-	private expandedPluginGroupIds = new Set<string>();
+	private expandedGroupIds = new Set<string>();
 	private loadingAction: DetailAction | undefined;
 	private loadingText: string | undefined;
 	private loadingFrame = 0;
@@ -250,8 +250,8 @@ export class ResourceBrowser implements Component, Focusable {
 			onOpenSelectedItem: () => this.openSelectedItem(),
 			onTogglePinned: (item) => this.togglePinned(item),
 			onToggleItem: (item) => this.toggleItem(item),
-			onToggleGroup: (items, enabled, label) => this.togglePluginGroup(items, enabled, label),
-			onAddResource: () => this.openAddMode(),
+			onToggleGroup: (items, enabled, label) => this.toggleResourceGroup(items, enabled, label),
+			onAddResource: this.category === "tools" ? undefined : () => this.openAddMode(),
 			onCycleSortMode: () => this.cycleSortMode(),
 			searchInput: this.mainSearchInput,
 			onApplyFilter: () => this.applyFilter(),
@@ -405,8 +405,11 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private renderFooter(width: number): string {
 		const selectedEntry = this.filteredListEntries[this.selectedIndex];
-		if (selectedEntry?.kind === "plugin-group") {
-			return this.renderFooterWithSettingsHint(width, "Space toggle all · Enter expand/collapse · A add · Esc close");
+		if (selectedEntry?.kind === "resource-group") {
+			const groupFooter = this.category === "tools"
+				? "Space toggle all · Enter expand/collapse · Esc close"
+				: "Space toggle all · Enter expand/collapse · A add · Esc close";
+			return this.renderFooterWithSettingsHint(width, groupFooter);
 		}
 		const selectedCategory = this.getSelectedResource()?.category ?? this.category;
 		return this.renderFooterWithSettingsHint(width, getListFooterText(selectedCategory));
@@ -417,7 +420,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private renderDetailFooter(width: number): string {
-		return this.renderFooterWithSettingsHint(width, getDetailFooterText());
+		return this.renderFooterWithSettingsHint(width, getDetailFooterText(this.detailItem));
 	}
 
 	private renderAddFooter(width: number): string {
@@ -519,7 +522,7 @@ export class ResourceBrowser implements Component, Focusable {
 			onToggleExpose: (item) => this.toggleExpose(item),
 			onUpdateItem: (item) => this.callbacks.onUpdate?.(item),
 			onRemoveItem: (item) => this.callbacks.onRemove?.(item),
-			onAddResource: () => this.openAddMode(),
+			onAddResource: this.detailItem?.category === "tools" ? undefined : () => this.openAddMode(),
 		});
 	}
 
@@ -785,8 +788,8 @@ export class ResourceBrowser implements Component, Focusable {
 	private openSelectedItem(): void {
 		const selected = this.filteredListEntries[this.selectedIndex];
 		if (!selected) return;
-		if (selected.kind === "plugin-group") {
-			this.togglePluginGroupExpanded(selected.pluginId);
+		if (selected.kind === "resource-group") {
+			this.toggleResourceGroupExpanded(selected.groupId);
 			return;
 		}
 		this.openDetailItem(selected.item, "list");
@@ -812,7 +815,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private getEntryResource(entry: BrowserListEntry | undefined): ResourceItem | undefined {
-		if (!entry || entry.kind === "plugin-group") return undefined;
+		if (!entry || entry.kind === "resource-group") return undefined;
 		return entry.item;
 	}
 
@@ -820,12 +823,12 @@ export class ResourceBrowser implements Component, Focusable {
 		return this.getEntryResource(this.filteredListEntries[this.selectedIndex]);
 	}
 
-	private togglePluginGroupExpanded(pluginId: string): void {
-		if (this.expandedPluginGroupIds.has(pluginId)) this.expandedPluginGroupIds.delete(pluginId); else this.expandedPluginGroupIds.add(pluginId);
+	private toggleResourceGroupExpanded(groupId: string): void {
+		if (this.expandedGroupIds.has(groupId)) this.expandedGroupIds.delete(groupId); else this.expandedGroupIds.add(groupId);
 		this.applyFilter();
 	}
 
-	private togglePluginGroup(items: ResourceItem[], enabled: boolean, label: string): void {
+	private toggleResourceGroup(items: ResourceItem[], enabled: boolean, label: string): void {
 		this.callbacks.onToggleGroup?.(items, enabled, label);
 	}
 
@@ -851,7 +854,7 @@ export class ResourceBrowser implements Component, Focusable {
 		const query = this.mainSearchInput.getValue().trim().toLowerCase();
 		const items = this.getVisibleCategoryItems(this.category);
 		const filteredItems = items.filter((item) => this.matchesResourceQuery(item, query));
-		this.filteredListEntries = buildBrowserListEntries(this.category, filteredItems, this.expandedPluginGroupIds, items);
+		this.filteredListEntries = buildBrowserListEntries(this.category, filteredItems, this.expandedGroupIds, items);
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredListEntries.length - 1));
 	}
 
@@ -896,7 +899,11 @@ export class ResourceBrowser implements Component, Focusable {
 				]
 					.join(" ")
 					.toLowerCase();
-				const pathText = "path" in item && item.path ? item.path.toLowerCase() : "";
+				const pathText = "path" in item && item.path
+					? item.path.toLowerCase()
+					: item.category === "tools"
+						? item.toolSourcePath.toLowerCase()
+						: "";
 				const descriptionText = item.description.toLowerCase();
 				this.searchTextCache.set(item.id, {
 					base,
@@ -1053,10 +1060,10 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private getCurrentAddScopeContext(): "project" | "user" {
-		if (this.mode === "detail" && this.detailItem) return this.detailItem.scope;
+		if (this.mode === "detail" && this.detailItem) return this.detailItem.scope === "project" ? "project" : "user";
 		if ((this.mode === "packageGroups" || this.mode === "packageItems") && this.packageItem?.category === "packages") return this.packageItem.scope;
 		const selectedItem = this.getSelectedResource();
-		return selectedItem?.scope ?? "project";
+		return selectedItem ? (selectedItem.scope === "project" ? "project" : "user") : "project";
 	}
 
 	private openAddMode(): void {

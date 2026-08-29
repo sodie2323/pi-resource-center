@@ -33,6 +33,7 @@ export interface SettingsShape {
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
+	defaultTools?: string[];
 }
 
 export interface SettingsFile {
@@ -43,7 +44,7 @@ export interface SettingsFile {
 
 export interface ExposedResourceEntry {
 	scope: ResourceScope;
-	category: Exclude<ResourceCategory, "packages" | "themes">;
+	category: Exclude<ResourceCategory, "packages" | "themes" | "tools">;
 	package: string;
 	path: string;
 }
@@ -119,14 +120,14 @@ export function getSettingPaths(settingsFile: SettingsFile | undefined, category
 }
 
 export function getSettingPathEntries(settingsFile: SettingsFile | undefined, category: ResourceCategory): Array<{ path: string; enabled: boolean }> {
-	if (!settingsFile || category === "packages") return [];
+	if (!settingsFile || category === "packages" || category === "tools") return [];
 	const values = settingsFile.settings[category] ?? [];
 	return values
 		.filter((value): value is string => typeof value === "string")
 		.map((value) => ({ path: resolve(settingsFile.dir, normalizeConfigPath(value)), enabled: !isDisabledConfigPath(value) }));
 }
 
-export function getPathResourceEnabledState(settingsFile: SettingsFile | undefined, category: Exclude<ResourceCategory, "packages">, path: string): boolean | undefined {
+export function getPathResourceEnabledState(settingsFile: SettingsFile | undefined, category: Exclude<ResourceCategory, "packages" | "tools">, path: string): boolean | undefined {
 	if (!settingsFile) return undefined;
 	const normalizedPath = resolve(settingsFile.dir, path);
 	let explicitState: boolean | undefined;

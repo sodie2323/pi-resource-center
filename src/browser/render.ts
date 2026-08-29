@@ -65,17 +65,24 @@ export function renderListPage(args: {
 		const entry = entries[index]!;
 		const selected = index === selectedIndex;
 		const marker = selected ? theme.fg("accent", "▌") : theme.fg("dim", " ");
-		if (entry.kind === "plugin-group") {
+		if (entry.kind === "resource-group") {
 			const toggle = theme.fg(
 				entry.enabledCount === 0 ? "dim" : entry.enabledCount === entry.totalCount ? "success" : "warning",
 				theme.bold(`[${entry.enabledCount}/${entry.totalCount}]`),
 			);
 			const disclosure = theme.fg("muted", entry.expanded ? "▾" : "▸");
-			const name = selected ? theme.bold(entry.pluginName) : theme.fg("text", entry.pluginName);
-			const scope = entry.scope === "project" ? theme.fg("success", "project") : theme.fg("warning", "user");
-			const source = theme.fg("dim", entry.sourceLabel);
-			const right = `${scope}  ${source}`;
-			const left = `${marker} ${toggle} ${disclosure} ${name}`;
+			const name = selected ? theme.bold(entry.groupName) : theme.fg("text", entry.groupName);
+			const sessionBadge = entry.items.length > 0 && entry.items.every((item) => item.category === "tools" && !item.builtin)
+				? theme.fg("dim", " [session]")
+				: "";
+			const scope = entry.scope === "project"
+				? theme.fg("success", "project")
+				: entry.scope === "user"
+					? theme.fg("warning", "user")
+					: theme.fg("muted", "session");
+			const source = entry.groupName === entry.sourceLabel ? "" : theme.fg("dim", entry.sourceLabel);
+			const right = source ? `${scope}  ${source}` : scope;
+			const left = `${marker} ${toggle} ${disclosure} ${name}${sessionBadge}`;
 			const spacing = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
 			let line = truncateToWidth(`${left}${" ".repeat(spacing)}${right}`, width, "…");
 			line = selected ? theme.bg("selectedBg", line) : theme.fg("text", line);
@@ -86,14 +93,21 @@ export function renderListPage(args: {
 		const toggle = isPackageItem(item) ? formatPackageToggleState(item) : formatBinaryToggle(item.enabled, true);
 		const pinBadge = isPinned(item) ? theme.fg("accent", "[pin] ") : "";
 		const packageBadge = isContainedResource(item) ? theme.fg("accent", theme.bold("[pkg] ")) : "";
+		const overrideBadge = item.category === "tools" && item.overridesBuiltin ? theme.fg("warning", "[override] ") : "";
+		const sessionBadge = item.category === "tools" && !item.builtin ? theme.fg("dim", " [session]") : "";
 		const packageVersion = isPackageItem(item) && item.version ? theme.fg("dim", ` @${item.version}`) : "";
 		const displayName = isPackageItem(item) ? formatResourceSourceLabel(item) : item.name;
-		const childIndent = entry.kind === "plugin-child" ? theme.fg("dim", "   ↳ ") : "";
-		const nameText = `${childIndent}${pinBadge}${packageBadge}${displayName}${packageVersion}`;
+		const childIndent = entry.kind === "resource-child" ? theme.fg("dim", "   ↳ ") : "";
+		const nameText = `${childIndent}${pinBadge}${packageBadge}${overrideBadge}${displayName}${sessionBadge}${packageVersion}`;
 		const name = selected ? theme.bold(nameText) : theme.fg("text", nameText);
-		const right = entry.kind === "plugin-child"
+		const itemScope = item.scope === "project"
+			? theme.fg("success", "project")
+			: item.scope === "user"
+				? theme.fg("warning", "user")
+				: theme.fg("muted", "session");
+		const right = entry.kind === "resource-child"
 			? ""
-			: `${item.scope === "project" ? theme.fg("success", "project") : theme.fg("warning", "user")}  ${theme.fg("dim", formatResourceSourceLabel(item))}`;
+			: `${itemScope}  ${theme.fg("dim", formatResourceSourceLabel(item))}`;
 		const left = `${marker} ${toggle} ${name}`;
 		const spacing = right ? Math.max(1, width - visibleWidth(left) - visibleWidth(right)) : 0;
 		let line = truncateToWidth(right ? `${left}${" ".repeat(spacing)}${right}` : left, width, "…");

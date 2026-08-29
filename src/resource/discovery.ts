@@ -31,6 +31,7 @@ import {
 } from "../settings.js";
 import { getPackageKey, getPackageResourceId } from "./identity.js";
 import { getCodexPluginInventory } from "./codex-plugin-inventory.js";
+import { buildToolResourceItems, type ToolRuntime } from "./tool-runtime.js";
 import type {
 	FileResourceItem,
 	PackageEnabledSummary,
@@ -43,7 +44,7 @@ import type {
 } from "../types.js";
 import { isRemotePackageSource } from "../types.js";
 
-const RESOURCE_CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
+const PACKAGE_RESOURCE_CATEGORIES = ["extensions", "skills", "prompts", "themes"] as const;
 
 type DiscoveryCaches = {
 	mtimeByPath: Map<string, number | undefined>;
@@ -79,6 +80,7 @@ type ExternalSkillIdentity = {
 export interface DiscoverResourcesOptions {
 	projectTrusted?: boolean;
 	syncExternalSkills?: boolean;
+	toolRuntime?: ToolRuntime;
 }
 
 export async function discoverResources(cwd: string, currentTheme?: string, options: DiscoverResourcesOptions = {}): Promise<ResourceIndex> {
@@ -141,6 +143,13 @@ export async function discoverResources(cwd: string, currentTheme?: string, opti
 		extensions: await mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills),
 		prompts: await mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills),
 		themes: await buildThemeItems(resolvedPaths.themes, selectedTheme, caches),
+		tools: options.toolRuntime
+			? sortItems(buildToolResourceItems(
+				options.toolRuntime.getAllTools(),
+				options.toolRuntime.getActiveTools(),
+				options.projectTrusted !== false && projectSettings.defaultTools !== undefined ? "project" : "user",
+			))
+			: [],
 	};
 
 	const index = { categories };
@@ -188,10 +197,10 @@ async function buildPackageItems(
 	return sortItems(items);
 }
 
-async function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes">>(
+async function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes" | "tools">>(
 	category: TCategory,
 	resources: ResolvedResource[],
-	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes">; package: string; path: string }>,
+	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes" | "tools">; package: string; path: string }>,
 	caches: DiscoveryCaches,
 	configuredSources: ExternalSkillSourceSetting[],
 	externalPluginOwners: ExternalPluginOwner[],
@@ -230,9 +239,9 @@ async function buildThemeItems(resources: ResolvedResource[], selectedTheme: str
 }
 
 async function createFileItem(
-	category: Exclude<ResourceCategory, "packages" | "themes">,
+	category: Exclude<ResourceCategory, "packages" | "themes" | "tools">,
 	resource: ResolvedResource,
-	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes">; package: string; path: string }>,
+	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes" | "tools">; package: string; path: string }>,
 	caches: DiscoveryCaches,
 	configuredSources: ExternalSkillSourceSetting[],
 	externalPluginOwners: ExternalPluginOwner[],
@@ -492,8 +501,7 @@ async function walkSkillDirectory(dir: string, found: Set<string>, includeRootFi
 
 function buildPackageCountMap(resolvedPaths: ResolvedPaths): Map<string, PackageResourceCounts> {
 	const counts = new Map<string, PackageResourceCounts>();
-	for (const category of RESOURCE_CATEGORIES) {
-		if (category === "packages") continue;
+	for (const category of PACKAGE_RESOURCE_CATEGORIES) {
 		for (const resource of resolvedPaths[category]) {
 			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope)) continue;
 			const key = getPackageKey(resource.metadata.scope, resource.metadata.source);
@@ -511,8 +519,7 @@ async function buildPackageEnabledSummaryMap(
 	caches: DiscoveryCaches,
 ): Promise<Map<string, PackageEnabledSummary>> {
 	const summaries = new Map<string, PackageEnabledSummary>();
-	for (const category of RESOURCE_CATEGORIES) {
-		if (category === "packages") continue;
+	for (const category of PACKAGE_RESOURCE_CATEGORIES) {
 		for (const resource of resolvedPaths[category]) {
 			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope)) continue;
 			const key = getPackageKey(resource.metadata.scope, resource.metadata.source);
@@ -532,8 +539,7 @@ async function buildPackageEnabledSummaryMap(
 
 function buildPackageInstallPathMap(resolvedPaths: ResolvedPaths): Map<string, string> {
 	const installPaths = new Map<string, string>();
-	for (const category of RESOURCE_CATEGORIES) {
-		if (category === "packages") continue;
+	for (const category of PACKAGE_RESOURCE_CATEGORIES) {
 		for (const resource of resolvedPaths[category]) {
 			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope) || !resource.metadata.baseDir) continue;
 			installPaths.set(getPackageKey(resource.metadata.scope, resource.metadata.source), resource.metadata.baseDir);
@@ -544,8 +550,7 @@ function buildPackageInstallPathMap(resolvedPaths: ResolvedPaths): Map<string, s
 
 async function buildPackageDescriptionMap(resolvedPaths: ResolvedPaths, caches: DiscoveryCaches): Promise<Map<string, string>> {
 	const packageDirs = new Map<string, string>();
-	for (const category of RESOURCE_CATEGORIES) {
-		if (category === "packages") continue;
+	for (const category of PACKAGE_RESOURCE_CATEGORIES) {
 		for (const resource of resolvedPaths[category]) {
 			if (resource.metadata.origin !== "package" || !isSupportedScope(resource.metadata.scope) || !resource.metadata.baseDir) continue;
 			packageDirs.set(getPackageKey(resource.metadata.scope, resource.metadata.source), resource.metadata.baseDir);
@@ -640,7 +645,7 @@ function isSupportedScope(scope: PathMetadata["scope"]): scope is ResourceScope 
 	return scope === "project" || scope === "user";
 }
 
-function inferName(category: Exclude<ResourceCategory, "packages" | "themes">, path: string): string {
+function inferName(category: Exclude<ResourceCategory, "packages" | "themes" | "tools">, path: string): string {
 	if (category === "skills" && basename(path) === "SKILL.md") {
 		return basename(dirname(path));
 	}
@@ -702,7 +707,7 @@ async function readPromptMetadata(path: string, caches: DiscoveryCaches): Promis
 }
 
 function buildResourceDescription(
-	category: Exclude<ResourceCategory, "packages">,
+	category: Exclude<ResourceCategory, "packages" | "tools">,
 	scope: ResourceScope,
 	metadata: PathMetadata,
 	path: string,

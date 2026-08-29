@@ -10,11 +10,13 @@ import {
 	isPackageItem,
 	isResourceCenterPackage,
 	isThemeItem,
+	isToolItem,
 	supportsPackageUpdate,
 } from "../resource/capabilities.js";
 import type { ResourceItem } from "../types.js";
 
 export function getDetailActions(item: ResourceItem): DetailAction[] {
+	if (isToolItem(item)) return ["toggle", "back"];
 	if (isPackageItem(item)) return ["manage", "toggle", "pin", "update", "remove", "back"];
 	if (canExposeResource(item)) return ["toggle", "expose", "pin", "back"];
 	if (isContainedResource(item)) return ["toggle", "pin", "back"];
@@ -33,6 +35,11 @@ export function getDetailActionHint(
 			if (!canManagePackageContents(item)) return undefined;
 			return theme.fg("dim", "Browse resources in this package");
 		case "toggle":
+			if (isToolItem(item)) {
+				return theme.fg("dim", item.persistent
+					? `${item.enabled ? "Disable" : "Enable"} now and update Pi defaultTools`
+					: `${item.enabled ? "Disable" : "Enable"} for the current session`);
+			}
 			if (isPackageItem(item)) {
 				if (item.enabled && isResourceCenterPackage(item)) {
 					return theme.fg("warning", "Resource Center cannot disable itself here; use pi config if intentional");

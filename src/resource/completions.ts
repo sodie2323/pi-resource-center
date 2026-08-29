@@ -4,6 +4,7 @@
 import { access, readdir } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 import { discoverResources } from "./discovery.js";
+import type { ToolRuntime } from "./tool-runtime.js";
 import { PROJECT_AGENT_DIR } from "../settings.js";
 import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
 
@@ -20,6 +21,7 @@ const ROOT_COMPLETIONS = [
 	{ value: "extensions", description: "Open the extensions browser" },
 	{ value: "prompts", description: "Open the prompts browser" },
 	{ value: "themes", description: "Open the themes browser" },
+	{ value: "tools", description: "Open the active tools browser" },
 ] as const;
 const ADD_SOURCE_COMPLETIONS = [
 	{ value: "npm:", description: "Install a package from npm, for example npm:pi-resource-center" },
@@ -42,6 +44,7 @@ const MUTATION_CATEGORY_COMPLETIONS = [
 	{ value: "extension", description: "Match an extension by name, source, or path" },
 	{ value: "prompt", description: "Match a prompt by name, source, or path" },
 	{ value: "theme", description: "Match a theme by name, source, or path" },
+	{ value: "tool", description: "Match a registered tool by name or source" },
 ] as const;
 const EXPOSURE_CATEGORY_COMPLETIONS = [
 	{ value: "skill", description: "Match a package-contained skill by name, source, or path" },
@@ -61,6 +64,8 @@ export const CATEGORY_ALIAS_MAP: Record<string, ResourceCategory> = {
 	prompts: "prompts",
 	theme: "themes",
 	themes: "themes",
+	tool: "tools",
+	tools: "tools",
 };
 
 export class ResourceCompletionProvider {
@@ -70,14 +75,16 @@ export class ResourceCompletionProvider {
 		extensions: [],
 		prompts: [],
 		themes: [],
+		tools: [],
 	};
-	private exposureCompletionCache: Record<Exclude<ResourceCategory, "packages" | "themes">, string[]> = {
+	private exposureCompletionCache: Record<Exclude<ResourceCategory, "packages" | "themes" | "tools">, string[]> = {
 		skills: [],
 		extensions: [],
 		prompts: [],
 	};
 	private completionCwd = process.cwd();
 	private projectTrusted = true;
+	private toolRuntime: ToolRuntime | undefined;
 	private initialized = false;
 
 	setCwd(cwd: string): void {
@@ -90,9 +97,14 @@ export class ResourceCompletionProvider {
 		this.projectTrusted = projectTrusted;
 	}
 
+	setToolRuntime(toolRuntime: ToolRuntime): void {
+		if (this.toolRuntime !== toolRuntime) this.initialized = false;
+		this.toolRuntime = toolRuntime;
+	}
+
 	async refresh(cwd: string, currentTheme?: string): Promise<void> {
 		this.completionCwd = cwd;
-		const resources = await discoverResources(cwd, currentTheme, { projectTrusted: this.projectTrusted });
+		const resources = await discoverResources(cwd, currentTheme, { projectTrusted: this.projectTrusted, toolRuntime: this.toolRuntime });
 		this.updateFromResources(resources);
 	}
 
@@ -103,6 +115,7 @@ export class ResourceCompletionProvider {
 			extensions: uniqueCompletionValues(resources.categories.extensions),
 			prompts: uniqueCompletionValues(resources.categories.prompts),
 			themes: uniqueCompletionValues(resources.categories.themes),
+			tools: uniqueCompletionValues(resources.categories.tools),
 		};
 		this.exposureCompletionCache = {
 			skills: uniqueCompletionValues(resources.categories.skills.filter((item) => item.packageSource)),
@@ -160,7 +173,7 @@ export class ResourceCompletionProvider {
 			}
 			if (!isCategoryAlias(parts[1]!)) return null;
 			const category = normalizeCategoryAlias(parts[1]!);
-			if (category === "packages" || category === "themes") return null;
+			if (category === "packages" || category === "themes" || category === "tools") return null;
 			const current = endsWithSpace ? "" : (parts[parts.length - 1] ?? "");
 			return buildScopedCompletionItems(this.exposureCompletionCache[category], current, `${command} ${parts[1]!} `);
 		}

@@ -1,9 +1,10 @@
 /**
  * 资源中心使用的核心领域类型定义。
  */
-export type ResourceCategory = "packages" | "skills" | "extensions" | "prompts" | "themes";
+export type ResourceCategory = "packages" | "skills" | "extensions" | "prompts" | "themes" | "tools";
 
 export type ResourceScope = "project" | "user";
+export type ToolResourceScope = ResourceScope | "session";
 
 export interface PackageResourceCounts {
 	extensions: number;
@@ -38,7 +39,7 @@ export interface PackageResourceItem {
 }
 
 export interface FileResourceItem {
-	category: Exclude<ResourceCategory, "packages" | "themes">;
+	category: Exclude<ResourceCategory, "packages" | "themes" | "tools">;
 	id: string;
 	name: string;
 	scope: ResourceScope;
@@ -78,7 +79,27 @@ export interface ThemeResourceItem {
 	exposed?: boolean;
 }
 
-export type ResourceItem = PackageResourceItem | FileResourceItem | ThemeResourceItem;
+export interface ToolResourceItem {
+	category: "tools";
+	id: string;
+	name: string;
+	scope: ToolResourceScope;
+	source: string;
+	sourceLabel?: string;
+	description: string;
+	enabled: boolean;
+	builtin: boolean;
+	persistent: boolean;
+	overridesBuiltin?: boolean;
+	toolSourcePath: string;
+	toolSourceOrigin: "package" | "top-level";
+	packageSource?: string;
+	packageRelativePath?: undefined;
+	exposed?: false;
+	updatedAt?: undefined;
+}
+
+export type ResourceItem = PackageResourceItem | FileResourceItem | ThemeResourceItem | ToolResourceItem;
 
 export interface ResourceIndex {
 	categories: Record<ResourceCategory, ResourceItem[]>;

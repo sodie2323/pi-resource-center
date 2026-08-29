@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { getKeybindings, visibleWidth } from '@earendil-works/pi-tui';
 import { ResourceBrowser } from '../src/browser/browser.ts';
 import { getDetailActions } from '../src/browser/actions.ts';
+import { buildBrowserListEntries } from '../src/browser/selectors.ts';
+import { buildToolResourceItems } from '../src/resource/tool-runtime.ts';
 import { DEFAULT_RESOURCE_CENTER_SETTINGS } from '../src/settings/shared.ts';
 
 const passthroughTheme = new Proxy({
@@ -37,9 +39,95 @@ const emptyResources = {
     extensions: [],
     prompts: [],
     themes: [],
+    tools: [],
   },
 };
 
+test('tools are individual resources grouped by their runtime source', () => {
+  const tools = buildToolResourceItems([
+    { name: 'read', description: 'Read files', parameters: {}, sourceInfo: { path: '<builtin:read>', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+    { name: 'bash', description: 'Run Bash', parameters: {}, sourceInfo: { path: '<builtin:bash>', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+    { name: 'search', description: 'Search remotely', parameters: {}, sourceInfo: { path: 'D:/ext/index.ts', source: 'npm:example-tools', scope: 'user', origin: 'package', baseDir: 'D:/ext' } },
+    { name: 'read', description: 'Remote read', parameters: {}, sourceInfo: { path: 'C:/agent/extensions/ssh.ts', source: 'auto', scope: 'user', origin: 'top-level' } },
+  ], ['read', 'search'], 'project');
+
+  const override = tools.find((tool) => tool.overridesBuiltin);
+  assert(override, 'overridden builtin should be detected');
+  assert(override.description.includes('overrides the built-in read tool'));
+
+  assert.deepEqual(tools.filter((tool) => !tool.overridesBuiltin).map(({ name, enabled, scope, persistent }) => ({ name, enabled, scope, persistent })), [
+    { name: 'read', enabled: true, scope: 'project', persistent: true },
+    { name: 'bash', enabled: false, scope: 'project', persistent: true },
+    { name: 'search', enabled: true, scope: 'user', persistent: false },
+  ]);
+
+  const collapsed = buildBrowserListEntries('tools', tools, new Set());
+  assert.equal(collapsed[0].kind, 'resource-group');
+  assert.equal(collapsed[0].groupName, 'builtin');
+  assert.equal(collapsed[0].enabledCount, 1);
+  assert.equal(collapsed[0].totalCount, 2);
+  assert.equal(collapsed[1].kind, 'resource');
+
+  const expanded = buildBrowserListEntries('tools', tools, new Set([collapsed[0].groupId]));
+  assert.deepEqual(expanded.map((entry) => entry.kind), ['resource-group', 'resource-child', 'resource-child', 'resource', 'resource']);
+});
+
+test('builtin tool group stays first regardless of sort order', () => {
+  const tools = buildToolResourceItems([
+    { name: 'read', description: 'Read files', parameters: {}, sourceInfo: { path: '<builtin:read>', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+    { name: 'bash', description: 'Run Bash', parameters: {}, sourceInfo: { path: '<builtin:bash>', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+    { name: 'a_search', description: 'Sorts first', parameters: {}, sourceInfo: { path: 'D:/npm/x/index.ts', source: 'npm:x', scope: 'user', origin: 'package' } },
+  ], ['read'], 'user');
+  const entries = buildBrowserListEntries('tools', tools, new Set());
+  assert.equal(entries[0].kind, 'resource-group');
+  assert.equal(entries[0].groupName, 'builtin');
+  assert.equal(entries[entries.length - 1].kind, 'resource');
+  assert.equal(entries[entries.length - 1].item.name, 'a_search');
+});
+
+test('tools browser renders source groups and dispatches group toggles', () => {
+  const tools = buildToolResourceItems([
+    { name: 'read', description: 'Read files', parameters: {}, sourceInfo: { path: '<builtin:read>', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+    { name: 'bash', description: 'Run Bash', parameters: {}, sourceInfo: { path: '<builtin:bash>', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+    { name: 'preview', description: 'Preview', parameters: {}, sourceInfo: { path: 'D:/npm/preview/index.ts', source: 'npm:preview', scope: 'user', origin: 'package' } },
+  ], ['read'], 'user');
+  let toggled;
+  const browser = new ResourceBrowser(
+    passthroughTheme,
+    { ...emptyResources, categories: { ...emptyResources.categories, tools } },
+    'tools',
+    structuredClone(DEFAULT_RESOURCE_CENTER_SETTINGS),
+    { onClose() {}, onToggleGroup(items, enabled, label) { toggled = { items, enabled, label }; } },
+    process.cwd(),
+    getKeybindings(),
+  );
+  const rendered = browser.render(100).join('\n');
+  assert(rendered.includes('[1/2]'));
+  assert(rendered.includes('builtin'));
+  assert(rendered.includes('[session]'));
+  assert.equal(rendered.includes('Builtins persist'), false);
+  assert.equal(rendered.includes('A add'), false);
+  browser.handleInput(' ');
+  assert.equal(toggled.enabled, true);
+  assert.equal(toggled.label, 'builtin');
+  assert.deepEqual([...toggled.items.map((item) => item.name)].sort(), ['bash', 'read']);
+
+  const extensionTools = buildToolResourceItems([
+    { name: 'search', description: 'Search', parameters: {}, sourceInfo: { path: 'D:/npm/preview/index.ts', source: 'npm:preview', scope: 'user', origin: 'package' } },
+    { name: 'render', description: 'Render', parameters: {}, sourceInfo: { path: 'D:/npm/preview/index.ts', source: 'npm:preview', scope: 'user', origin: 'package' } },
+  ], [], 'user');
+  const extensionBrowser = new ResourceBrowser(
+    passthroughTheme,
+    { ...emptyResources, categories: { ...emptyResources.categories, tools: extensionTools } },
+    'tools',
+    structuredClone(DEFAULT_RESOURCE_CENTER_SETTINGS),
+    { onClose() {} },
+    process.cwd(),
+    getKeybindings(),
+  );
+  const extensionRendered = extensionBrowser.render(100).join('\n');
+  assert(extensionRendered.includes('npm:preview [session]'));
+});
 test('package details retain the documented whole-package toggle', () => {
   assert.deepEqual(getDetailActions(packageItem), ['manage', 'toggle', 'pin', 'update', 'remove', 'back']);
 });

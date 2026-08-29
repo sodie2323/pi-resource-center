@@ -1,11 +1,12 @@
 /**
  * 统一资源操作相关的用户提示文案。
  */
-import { canRemoveResourceIndividually, isContainedResource, isPackageItem, isThemeItem } from "./capabilities.js";
+import { canRemoveResourceIndividually, isContainedResource, isPackageItem, isThemeItem, isToolItem } from "./capabilities.js";
 import type { ResourceItem } from "../types.js";
 
 export function getRemoveBlockedMessage(item: ResourceItem): string | undefined {
 	if (canRemoveResourceIndividually(item)) return undefined;
+	if (isToolItem(item)) return "Tools are registered by Pi or extensions and can't be removed individually. Disable the tool or its providing extension instead.";
 	if (isContainedResource(item)) return "This resource comes from a package and can't be removed individually. Disable it instead.";
 	if ("managedByPluginSettings" in item && item.managedByPluginSettings) {
 		return "This resource comes from an external skill source managed by plugin settings. Disable that source in Settings instead.";

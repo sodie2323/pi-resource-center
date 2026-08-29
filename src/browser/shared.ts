@@ -6,9 +6,9 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AddPathCategory } from "../resource/add-detect.js";
 import type { ResourceCenterSettings } from "../settings.js";
 export type { ResourceSortMode } from "../settings.js";
-import type { ResourceCategory, ResourceItem, ResourceScope } from "../types.js";
+import type { ResourceCategory, ResourceItem, ToolResourceScope } from "../types.js";
 
-export const CATEGORY_ORDER: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
+export const CATEGORY_ORDER: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes", "tools"];
 
 export const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	packages: "Packages",
@@ -16,11 +16,12 @@ export const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	extensions: "Extensions",
 	prompts: "Prompts",
 	themes: "Themes",
+	tools: "Tools",
 };
 
 export type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems" | "settings" | "add";
 export type DetailAction = "manage" | "toggle" | "pin" | "expose" | "update" | "remove" | "back";
-export type PackageContentCategory = Exclude<ResourceCategory, "packages">;
+export type PackageContentCategory = Exclude<ResourceCategory, "packages" | "tools">;
 export const PACKAGE_CONTENT_CATEGORIES: PackageContentCategory[] = ["extensions", "skills", "prompts", "themes"];
 
 export type SettingsSection = "all" | "display" | "packages" | "search" | "integrations";
@@ -80,10 +81,10 @@ export type PackageGroupEntry =
 export type BrowserListEntry =
 	| { kind: "resource"; item: ResourceItem }
 	| {
-			kind: "plugin-group";
-			pluginId: string;
-			pluginName: string;
-			scope: ResourceScope;
+			kind: "resource-group";
+			groupId: string;
+			groupName: string;
+			scope: ToolResourceScope;
 			sourceLabel: string;
 			items: ResourceItem[];
 			enabledCount: number;
@@ -91,7 +92,7 @@ export type BrowserListEntry =
 			expanded: boolean;
 			updatedAt?: number;
 	  }
-	| { kind: "plugin-child"; pluginId: string; item: ResourceItem };
+	| { kind: "resource-child"; groupId: string; item: ResourceItem };
 
 export interface AddResourceRequest {
 	input: string;

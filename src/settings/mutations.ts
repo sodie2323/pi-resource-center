@@ -28,6 +28,7 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem, 
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
+		if (item.category === "tools") throw new Error("Tools are managed through Pi's active-tool API");
 		if (item.category === "packages") {
 			if (!item.enabled && isResourceCenterPackage(item)) {
 				throw new Error("Resource Center cannot disable its own package while it is running; use pi config if this is intentional");
@@ -47,6 +48,7 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem, 
 }
 
 export async function removeResourceFromSettings(cwd: string, item: ResourceItem, projectTrusted = true): Promise<string> {
+	if (item.category === "tools") throw new Error("Tools cannot be removed from Pi settings");
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
@@ -109,6 +111,25 @@ export async function setActiveTheme(cwd: string, themeName: string, scope: "pro
 	}
 }
 
+export async function setDefaultTools(
+	cwd: string,
+	toolNames: string[],
+	scope: "project" | "user",
+	projectTrusted = true,
+): Promise<string> {
+	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
+	const settingsManager = createSettingsManager(cwd, projectTrusted);
+	try {
+		if (scope === "project" && !settingsManager.isProjectTrusted()) throw new Error("Project is not trusted");
+		const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
+		settingsFile.settings.defaultTools = [...new Set(toolNames)];
+		await saveSettingsFile(settingsPath, settingsFile.settings);
+		return settingsPath;
+	} catch (error: unknown) {
+		throw new Error(`Failed to save defaultTools in ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
+	}
+}
+
 export async function addPathResourceToSettings(cwd: string, category: AddPathCategory, path: string, scope: "project" | "user" = "project", projectTrusted = true): Promise<string> {
 	const settingsPath = scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = createSettingsManager(cwd, projectTrusted);
@@ -143,7 +164,7 @@ function togglePackage(settingsManager: SettingsManager, scope: "project" | "use
 	setPackagesForScope(settingsManager, scope, packages);
 }
 
-function togglePathResource(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "themes">, item: FileResourceItem, settingsDir: string): void {
+function togglePathResource(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "themes" | "tools">, item: FileResourceItem, settingsDir: string): void {
 	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
 	const current = [...(settings[category] ?? [])];
 	const relativePath = toSettingsPath(item.path, settingsDir);
@@ -160,7 +181,7 @@ function togglePathResource(settingsManager: SettingsManager, scope: "project" |
 	setPathEntriesForScope(settingsManager, scope, category, updated);
 }
 
-function togglePackageResource(settingsManager: SettingsManager, item: Exclude<ResourceItem, { category: "packages" }>, enabled: boolean): void {
+function togglePackageResource(settingsManager: SettingsManager, item: Exclude<ResourceItem, { category: "packages" | "tools" }>, enabled: boolean): void {
 	if (!item.packageSource) throw new Error(`Resource ${item.name} is not backed by a package`);
 	const settings = item.scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
 	const packages = [...(settings.packages ?? [])] as PackageSource[];
@@ -200,7 +221,7 @@ function setPackagesForScope(settingsManager: SettingsManager, scope: "project" 
 	if (scope === "project") settingsManager.setProjectPackages(packages); else settingsManager.setPackages(packages);
 }
 
-function setPathEntriesForScope(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages">, paths: string[]): void {
+function setPathEntriesForScope(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "tools">, paths: string[]): void {
 	if (scope === "project") {
 		if (category === "extensions") settingsManager.setProjectExtensionPaths(paths);
 		else if (category === "skills") settingsManager.setProjectSkillPaths(paths);

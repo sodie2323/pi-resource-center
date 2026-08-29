@@ -33,6 +33,61 @@ test('refuses project settings writes when project is not trusted', async () => 
   );
 });
 
+test('persists built-in tool defaults without replacing unrelated Pi settings', async () => {
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ theme: 'dark', defaultTools: ['read', 'bash'] }), 'utf8');
+  const { setDefaultTools } = await import('../src/settings/mutations.ts');
+  const settingsPath = await setDefaultTools(cwd, ['read', 'powershell', 'edit', 'write'], 'user', false);
+  const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(saved.theme, 'dark');
+  assert.deepEqual(saved.defaultTools, ['read', 'powershell', 'edit', 'write']);
+  await assert.rejects(setDefaultTools(cwd, ['read'], 'project', false), /Project is not trusted/);
+});
+
+test('tool commands update the live set and persist built-in defaults', async () => {
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ defaultTools: ['read', 'bash'] }), 'utf8');
+  const allTools = [
+    ...['read', 'bash', 'powershell'].map((name) => ({
+      name,
+      description: `${name} tool`,
+      parameters: {},
+      sourceInfo: { path: `<builtin:${name}>`, source: 'builtin', scope: 'temporary', origin: 'top-level' },
+    })),
+    {
+      name: 'remote_search',
+      description: 'Extension search tool',
+      parameters: {},
+      sourceInfo: { path: 'D:/example/index.ts', source: 'npm:example-tools', scope: 'user', origin: 'package' },
+    },
+  ];
+  let activeTools = ['read', 'bash', 'remote_search'];
+  const runtime = {
+    getAllTools: () => allTools,
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names) => { activeTools = [...names]; },
+  };
+  const notices = [];
+  const ctx = {
+    cwd,
+    isProjectTrusted: () => false,
+    ui: {
+      theme: { name: 'dark' },
+      notify: (message, type) => notices.push({ message, type }),
+    },
+  };
+  const { handleMutateCommand } = await import('../src/resource/commands.ts');
+  await handleMutateCommand('enable', 'tool powershell', ctx, async () => {}, runtime);
+  await handleMutateCommand('disable', 'tool bash', ctx, async () => {}, runtime);
+  await handleMutateCommand('disable', 'tool remote_search', ctx, async () => {}, runtime);
+  assert.deepEqual(activeTools, ['read', 'powershell']);
+  const saved = JSON.parse(await readFile(join(agentDir, 'settings.json'), 'utf8'));
+  assert.deepEqual(saved.defaultTools, ['read', 'powershell']);
+  assert(notices.some(({ message }) => message.includes('Enabled tool powershell')));
+  assert(notices.some(({ message }) => message.includes('Disabled tool bash')));
+  assert(notices.some(({ message }) => message.includes('Disabled tool remote_search · current session')));
+});
+
 test('manual skill toggles preserve the discovery root and use exact overrides', async () => {
   const skillDir = join(home, 'manual-skill');
   const skillPath = join(skillDir, 'SKILL.md');

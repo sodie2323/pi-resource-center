@@ -7,7 +7,7 @@ import { basename, extname, resolve } from "node:path";
 import { resolveHomePath } from "../settings.js";
 import type { ResourceCategory } from "../types.js";
 
-export type AddPathCategory = Exclude<ResourceCategory, "packages">;
+export type AddPathCategory = Exclude<ResourceCategory, "packages" | "tools">;
 
 export type AddTarget =
 	| { kind: "package"; source: string; description: string }

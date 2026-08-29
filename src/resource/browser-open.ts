@@ -4,7 +4,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ResourceBrowser } from "../browser/browser.js";
 import { discoverResources } from "./discovery.js";
-import { canRemoveResourceIndividually, isPackageItem, isResourceCenterPackage, isThemeItem, supportsPackageUpdate } from "./capabilities.js";
+import { canRemoveResourceIndividually, isPackageItem, isResourceCenterPackage, isThemeItem, isToolItem, supportsPackageUpdate } from "./capabilities.js";
 import { buildSuccessOperationMessage, ResourceOperationStatusController } from "./operation-status.js";
 import {
 	getExposeErrorMessage,
@@ -17,16 +17,17 @@ import {
 	getToggleSuccessMessage,
 } from "./messages.js";
 import { addResourceFromInput, reloadAfterSettingsChange, updatePackageSource } from "./commands.js";
-import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setExternalSkillEnabled, setExternalSkillsEnabled, setResourceExposed, toggleResourceInSettings } from "../settings.js";
-import type { ResourceCategory, ResourceItem } from "../types.js";
+import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setDefaultTools, setExternalSkillEnabled, setExternalSkillsEnabled, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import type { ResourceCategory, ResourceItem, ToolResourceItem } from "../types.js";
+import type { ToolRuntime } from "./tool-runtime.js";
 
-export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext): Promise<void> {
+export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, toolRuntime: ToolRuntime): Promise<void> {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify("The Resource Center browser is only available in interactive TUI mode. Use /resource subcommands in this mode.", "warning");
 		return;
 	}
 	const resourceCenterSettings = await readResourceCenterSettings();
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime });
 	let currentResourceCenterSettings = resourceCenterSettings;
 	let hasPendingChanges = false;
 
@@ -35,6 +36,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		let browser!: ResourceBrowser;
 		let refreshGeneration = 0;
 		let settingsSaveQueue: Promise<void> = Promise.resolve();
+		let toolMutationQueue: Promise<void> = Promise.resolve();
 		const requestRender = () => {
 			if (browserOpen) tui.requestRender();
 		};
@@ -43,6 +45,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			const nextResources = await discoverResources(ctx.cwd, ctx.ui.theme.name, {
 				projectTrusted: ctx.isProjectTrusted(),
 				syncExternalSkills: false,
+				toolRuntime,
 			});
 			if (!browserOpen || generation !== refreshGeneration) return;
 			browser.setResources(nextResources);
@@ -61,11 +64,37 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			browser.setActionMessage(action, type, text);
 			requestRender();
 		};
+		const setToolsEnabledNow = async (items: ToolResourceItem[], enabled: boolean): Promise<string | undefined> => {
+			const active = new Set(toolRuntime.getActiveTools());
+			for (const item of items) {
+				if (enabled) active.add(item.name); else active.delete(item.name);
+			}
+			const builtinItem = items.find((item) => item.builtin);
+			let settingsPath: string | undefined;
+			if (builtinItem) {
+				const scope = builtinItem.scope;
+				if (scope === "session") throw new Error("Built-in tools require user or project scope");
+				const builtinNames = new Set(
+					toolRuntime.getAllTools()
+						.filter((tool) => tool.sourceInfo.source === "builtin")
+						.map((tool) => tool.name),
+				);
+				const activeBuiltinNames = [...active].filter((name) => builtinNames.has(name));
+				settingsPath = await setDefaultTools(ctx.cwd, activeBuiltinNames, scope, ctx.isProjectTrusted());
+			}
+			toolRuntime.setActiveTools([...active]);
+			return settingsPath;
+		};
+		const setToolsEnabled = (items: ToolResourceItem[], enabled: boolean): Promise<string | undefined> => {
+			const operation = toolMutationQueue.then(() => setToolsEnabledNow([...items], enabled));
+			toolMutationQueue = operation.then(() => undefined, () => undefined);
+			return operation;
+		};
 		const closeBrowser = async () => {
 			browserOpen = false;
 			refreshGeneration += 1;
 			done(undefined);
-			await settingsSaveQueue;
+			await Promise.all([settingsSaveQueue, toolMutationQueue]);
 			if (!hasPendingChanges) return;
 			await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 		};
@@ -108,6 +137,16 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					setActionMessage("toggle", "warning", "Resource Center cannot disable itself while it is running. Use pi config if this is intentional.");
 					return;
 				}
+				if (isToolItem(item)) {
+					const settingsPath = await setToolsEnabled([item], item.enabled);
+					await refreshBrowser();
+					setActionMessage(
+						"toggle",
+						"info",
+						`${item.enabled ? "Enabled" : "Disabled"} tool ${item.name}${settingsPath ? ` · ${settingsPath}` : " · current session"}`,
+					);
+					return;
+				}
 				if ("externalSkillId" in item && item.externalSkillId) {
 					const statePath = await setExternalSkillEnabled(item.externalSkillId, item.enabled);
 					hasPendingChanges = true;
@@ -136,6 +175,18 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		const toggleGroup = async (items: ResourceItem[], enabled: boolean, label: string) => {
 			const previousStates = items.map((item) => ({ item, enabled: item.enabled }));
 			try {
+				if (items.every(isToolItem)) {
+					const changedItems = items.filter((item) => item.enabled !== enabled);
+					for (const item of changedItems) item.enabled = enabled;
+					const settingsPath = await setToolsEnabled(changedItems, enabled);
+					await refreshBrowser();
+					setActionMessage(
+						"toggle",
+						"info",
+						`${enabled ? "Enabled" : "Disabled"} ${changedItems.length} tools in ${label}${settingsPath ? ` · ${settingsPath}` : " · current session"}`,
+					);
+					return;
+				}
 				let settingsPath: string | undefined;
 				let changedCount = 0;
 				const changedItems = items.filter((item) => item.enabled !== enabled);

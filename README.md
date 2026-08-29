@@ -1,391 +1,168 @@
 # pi-resource-center
 
 [![npm version](https://img.shields.io/npm/v/pi-resource-center.svg)](https://www.npmjs.com/package/pi-resource-center)
-[![Version](https://img.shields.io/badge/version-0.2.7-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue.svg)](https://github.com/sodie2323/pi-resource-center/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Pi Package](https://img.shields.io/badge/pi-package-purple.svg)](https://github.com/sodie2323/pi-resource-center)
 
-> Questions, feedback, or bug reports? [Join the discussion on Discord](https://discord.com/channels/1456806362351669492/1489814646679666821).
+A keyboard-driven resource browser for [Pi](https://github.com/earendil-works/pi-mono): browse, enable/disable, and organize your **packages, skills, extensions, prompts, themes, and tools** from a single `/resource` TUI. Slash commands mirror every browser action.
 
-A `pi-package` for [Pi](https://github.com/earendil-works/pi-mono) that adds a `/resource` command and TUI for browsing, discovering, and managing:
+> Questions or bug reports? [Join the Discord](https://discord.com/channels/1456806362351669492/1489814646679666821).
 
-- packages
-- skills
-- extensions
-- prompts
-- themes
-
-It provides a keyboard-driven TUI resource browser, resource discovery across project and user scope, and command-based actions for enabling, disabling, removing, pinning, exposing, updating, and applying resources.
-
-## Table of contents
-
-- [Highlights](#highlights)
-- [Quick start](#quick-start)
-- [Common commands](#common-commands)
-- [Installation](#installation)
-  - [Install from npm](#install-from-npm)
-  - [Install from GitHub](#install-from-github)
-  - [Install from a local path](#install-from-a-local-path)
-  - [Important note about local installs](#important-note-about-local-installs)
-- [Usage](#usage)
-  - [Open the browser](#open-the-browser)
-  - [Re-run discovery](#re-run-discovery)
-  - [Core command groups](#core-command-groups)
-  - [Add a package source or local resource](#add-a-package-source-or-local-resource)
-  - [Enable, disable, remove, expose, or hide resources](#enable-disable-remove-expose-or-hide-resources)
-- [Theme behavior](#theme-behavior)
-- [TUI controls](#tui-controls)
-  - [Browser view](#browser-view)
-  - [Detail view](#detail-view)
-  - [Add view](#add-view)
-  - [Settings view](#settings-view)
-- [Plugin settings](#plugin-settings)
-- [Discovery model](#discovery-model)
-  - [Project scope](#project-scope)
-  - [User scope](#user-scope)
-  - [Package sources](#package-sources)
-- [Requirements](#requirements)
-- [Notes](#notes)
-- [License](#license)
-
-## Highlights
-
-- Unified browser for packages, skills, extensions, prompts, and themes
-- Fast search and keyboard navigation in a dedicated TUI
-- Discovery across project settings, user settings, conventional folders, and package sources
-- Enable/disable top-level resources and package-contained resources from the browser or command line
-- Pin resources to keep them at the top of sorted lists
-- Apply built-in and custom themes from the browser or command line
-- Remove configured resources from settings
-- Add package sources and local resources via `/resource add ...` or the browser Add view
-- Package adds validate source syntax and install successfully before writing settings
-- Add and update operations show a live multi-line status widget above the editor while work is in progress
-- Update remote packages directly from the browser
-- Argument completions for `/resource` subcommands
-- Built-in settings UI (`Shift+S`) with persistent preferences
-- External skill source management for Claude, Codex, Codex Plugins, OpenCode, and multiple custom directories
-- Codex plugin skills can be grouped by plugin in the Skills browser for cleaner navigation
-- Codex plugin skill disabled state is tracked by stable plugin/skill IDs so Codex cache or version path changes do not re-enable disabled skills
-- Inline integrations editing with keyboard shortcuts for add/remove and quick on/off toggling
-- Add view defaults scope from the current context and offers inline source suggestions for local paths, npm, git, and GitHub URLs
-- Package lists and detail views display installed package versions
-- Source labels prefer configured external source names such as Codex or custom source labels when available
-- Local package sources use shorter `local:<name>` labels instead of full absolute paths in the browser
-- Manually added top-level path resources keep a stable on/off state instead of disappearing when toggled
-- Prompt detail views surface frontmatter metadata such as `argument-hint`
+![Resource Center browser — Packages tab](docs/browser.png)
 
 ## Quick start
 
-Install the package and open the browser:
-
 ```bash
 pi install npm:pi-resource-center
 ```
 
-```text
-/resource
-```
-
-Running `/resource` opens the browser on the `packages` tab by default.
-
-## Common commands
+Then in Pi:
 
 ```text
-/resource
-/resource add npm:pi-resource-center project
-/resource enable extension resource-center/index.ts
-/resource remove theme my-theme
-/resource sync
-```
-
-## Installation
-
-### Install from npm
-
-```bash
-pi install npm:pi-resource-center
-```
-
-### Install from GitHub
-
-```bash
-pi install https://github.com/sodie2323/pi-resource-center
-```
-
-### Install from a local path
-
-From the package directory:
-
-```bash
-pi install .
-```
-
-Or with an absolute path:
-
-```bash
-pi install E:/code/pi-resource-center
-```
-
-### Important note about local installs
-
-For local paths, Pi loads the package directly from that folder instead of copying it elsewhere.
-
-If you update the local package after installing it, run:
-
-```bash
 /reload
-```
-
-## Usage
-
-### Open the browser
-
-```bash
 /resource
-/resource packages
-/resource skills
-/resource extensions
-/resource prompts
-/resource themes
 ```
 
-### Re-run discovery
+That's it. The browser opens on the **Packages** tab. Everything below is reference material.
 
-```bash
-/resource sync
+## The Browser
+
+### Categories
+
+| Tab | What it shows | `Space` on a row |
+|-----|---------------|------------------|
+| **Packages** | Configured package sources with `[enabled/total]` contents summary | Enable/disable the whole package¹ |
+| **Skills** | Project, user, and external (Claude/Codex/OpenCode) skills | Enable/disable |
+| **Extensions** | Local and package extensions | Enable/disable |
+| **Prompts** | Prompt templates (with `argument-hint` in details) | Enable/disable |
+| **Themes** | Built-in and custom themes | Apply theme |
+| **Tools** | Registered tools (builtin + extensions), grouped by source | Enable/disable² |
+
+¹ Disabling a package replaces its resource filters with empty arrays; enabling restores the plain source. **Fine-grained `autoload`, glob, and `+/-/!` filters are cleared** — use **Manage Resources** (`Enter` on the package) to preserve them. Resource Center refuses to disable its own running package.
+
+² Builtin tool changes also persist to Pi's native `defaultTools`; extension tool changes are session-only (see [Tools](#tools)).
+
+### Row badges
+
+| Badge | Meaning |
+|-------|---------|
+| `[n/m]` | Group with `n` of `m` resources enabled (package rows, Codex plugin skills, tool sources) |
+| `[pkg]` | Package-contained resource, shown in a top-level category |
+| `[pin]` | Pinned to top of the list |
+| `[override]` | Tool that replaces a builtin (e.g. an extension re-registering `read`) |
+| `[session]` | Tool whose on/off state is session-only |
+
+### Keys
+
+| Key | Browser list | Detail view | Add view | Settings (`Shift+S`) |
+|-----|--------------|-------------|----------|----------------------|
+| `←/→` | Switch category | — | — | Switch settings tab |
+| `Tab` | Cycle sort mode³ | — | Switch scope | Switch settings tab |
+| `↑/↓` | Move selection | Choose action | Pick suggestion | Move selection |
+| `PgUp/PgDn` | Page through list | — | — | — |
+| `Enter` | Open details | Confirm action | Add | Change / edit inline |
+| `Space` | Toggle item / expand group | — | — | Toggle integration |
+| `A` | Add resource | Add resource | — | Add custom source⁴ |
+| `P` | Pin/unpin | Pin/unpin | — | — |
+| `R` | — | — | — | Remove custom source⁴ |
+| `Type` | Filter list | — | Enter source | Filter settings |
+| `Esc` | Close | Back | Back | Close / cancel |
+| `Shift+S` | Settings | Settings | — | — |
+
+³ Sort modes: `Recent`, `Default`, `Name`, `Enabled`, `Scope`.
+⁴ Integrations tab only.
+
+Notes:
+
+- **Manage Resources** (`Enter` on a package) opens the package contents view to browse and toggle contained extensions, skills, prompts, and themes individually. Package-contained resources can be surfaced in their top-level category via **Show in Category** (marked `[pkg]`).
+- **Add view**: default scope follows the current selection context; inline suggestions for local paths, `npm:`, `git:`, and GitHub URLs. Remote adds run the real Pi install before writing settings. Long operations show a live status widget and survive leaving the view.
+- **Settings view** persists preferences (sort mode, reload behavior, search options, pins, external skill sources) to [its own file](#plugin-settings).
+
+## Behavior notes
+
+### Tools
+
+The Tools tab reads Pi's live `getAllTools()` / `getActiveTools()` inventories. Tools from the same source are grouped (`builtin`, package name, or `local:<file>`); single-tool sources are plain rows. The builtin group always sorts first.
+
+- **Builtin tools** (read, bash, powershell, edit, write, grep, find, ls): toggles apply immediately **and** persist to Pi's `defaultTools` — project settings if the trusted project defines `defaultTools`, otherwise user settings.
+- **Extension/SDK tools**: session-only, because Pi has no persistent per-tool setting for custom tools. To remove them permanently, disable their package or extension instead.
+- Disabling a tool only stops the model calling it; it does not unload the extension, its commands, or its event handlers.
+- Tools are runtime capabilities: no add/remove/update/pin, and they don't count toward package summaries.
+- On Windows, enabling `powershell` and disabling `bash` persistently replaces Bash with PowerShell — equivalent to:
+
+```json
+{ "defaultTools": ["read", "powershell", "edit", "write"] }
 ```
 
-### Core command groups
+### Themes
 
-- `add` — register a package source or local resource path in project or user settings
-- `enable` / `disable` — toggle packages or individual resources, including package-contained resources
-- `remove` — remove configured resources from settings
-- `expose` / `hide` — show or hide package-contained resources in top-level categories
-- `sync` — re-run discovery and refresh the current resource index
+Themes are **applied**, not enabled/disabled: `Space` switches the UI immediately and saves the theme setting. Built-in `dark`/`light` can't be removed; custom themes can.
 
-### Add a package source or local resource
+### Discovery model
 
-The browser `A` flow and `/resource add` both support:
+Resources are discovered from, in both project and user scope:
 
-- remote package sources such as `npm:`, `git:`, and full GitHub URLs
-- local package directories
-- local extensions, skills, prompts, and themes
+- Pi settings path entries (`extensions`, `skills`, `prompts`, `themes` arrays, including `+`/`-`/`!` and glob filters)
+- Conventional folders: `.pi/extensions|skills|prompts|themes` and `~/.pi/agent/...`
+- Agent Skills folders: `.agents/skills/` in the current directory and its ancestors
+- Configured package sources (`npm:`, `git:`, `http(s)://`, local paths), including `autoload: false` deltas
+- External skill sources configured in Resource Center settings (see [Integrations](#integrations))
 
-In the browser Add view, the default scope now follows the current selection context instead of always defaulting to project scope.
+By default, package-contained extensions/skills/prompts are managed from the package's **Manage Resources** view; **Show in Category** surfaces them top-level. Package themes are always shown in the Themes tab. When a project is not trusted, project-scope resources are neither discovered nor modified.
 
-```bash
-/resource add <source-or-path>
-/resource add <source-or-path> project
-/resource add <source-or-path> user
-/resource add [category] <source-or-path> [project|user]
-```
+## Commands (Reference)
 
-Examples:
+Every browser action is also a command. `Tab` completes subcommands and resource names.
 
-```bash
-/resource add npm:@scope/some-pi-package
-/resource add git:https://github.com/user/some-pi-package.git user
-/resource add https://github.com/user/some-pi-package
-/resource add ../local-pi-package project
-/resource add extension ./extensions/resource-center/index.ts
-/resource add skill ./skills/my-skill
-/resource add prompt ./prompts/review.md
-/resource add theme ./themes/my-theme.json
-```
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `/resource [category]` | Open the browser | `/resource tools` |
+| `/resource sync` | Re-run discovery | `/resource sync` |
+| `/resource add [category] <src> [project\|user]` | Register a package or local resource | `/resource add npm:@scope/pkg user` |
+| `/resource enable [category] <name>` | Enable | `/resource enable tool powershell` |
+| `/resource disable [category] <name>` | Disable | `/resource disable package npm:@scope/pkg` |
+| `/resource remove [category] <name>` | Remove from settings | `/resource remove theme my-theme` |
+| `/resource expose [category] <name>` | Surface package resource top-level | `/resource expose prompt review.md` |
+| `/resource hide [category] <name>` | Reverse of expose | `/resource hide skill review` |
 
-### Enable, disable, remove, expose, or hide resources
+Category aliases: `package`, `skill`, `extension`, `prompt`, `theme`, `tool` (plural forms work). Matching covers name, source, path, and package-relative path.
 
-```bash
-/resource enable [category] <name-or-source>
-/resource disable [category] <name-or-source>
-/resource remove [category] <name-or-source>
-/resource expose [category] <name-or-source>
-/resource hide [category] <name-or-source>
-```
+## Integrations
 
-Supported category aliases:
+`Shift+S` → **Integrations** manages external skill sources: Claude, Codex, Codex Plugins, OpenCode, plus custom directories (add with `A`, remove with `R`, toggle with `Space`, edit paths inline).
 
-- `package`
-- `skill`
-- `extension`
-- `prompt`
-- `theme`
-
-Examples:
-
-```bash
-/resource disable package npm:@scope/some-pi-package
-/resource disable skill review
-/resource enable extension resource-center/index.ts
-/resource remove theme my-theme
-/resource expose prompt prompts/review.md
-/resource hide extension my-package/index.ts
-```
-
-Package-contained resources can also be toggled. Matching works across common fields such as name, source, path, and package-relative path when available.
-
-`/resource expose` and `/resource hide` apply to package-contained extensions, skills, and prompts only.
-
-## Theme behavior
-
-Themes are handled a little differently from other resources.
-
-- Built-in Pi themes `dark` and `light` are discovered and shown in the browser
-- Custom themes discovered from files are also listed
-- Applying a theme updates Pi settings and switches the UI immediately
-- Themes are **applied**, not traditionally enabled/disabled
-- Custom themes can be removed from settings
-- Built-in themes cannot be removed
-
-Examples:
-
-```bash
-/resource enable theme dark
-/resource enable theme light
-/resource remove theme my-theme
-```
-
-## TUI controls
-
-### Browser view
-
-- `Left/Right` — switch categories
-- `Tab` — cycle sort mode (`Recent`, `Default`, `Name`, `Enabled`, `Scope`)
-- `Up/Down` — move selection
-- `PageUp/PageDown` — jump through the list
-- `Enter` — open resource details
-- `Space` — enable/disable or apply the selected item; package rows retain their `[enabled/total]` summary
-- `A` — add a package source or local resource
-- `P` — pin or unpin the selected item
-- `Shift+S` — open Resource Center settings
-- `Esc` — close or go back
-
-Pinned resources are kept at the top of sorted lists.
-
-### Detail view
-
-- `Up/Down` — choose an action
-- `Enter` — confirm action
-- `A` — add a package source or local resource
-- `P` — pin or unpin the current item
-- `Shift+S` — open Resource Center settings
-- `Esc` — return to the list
-
-For packages, the detail view includes a **Manage Resources** action that opens the package contents view, where you can browse contained extensions, skills, prompts, and themes, search within the package, and manage them directly.
-
-Whole-package enable/disable remains available from the package row and detail view. It intentionally favors the common all-on/all-off workflow: disabling replaces package resource filters with empty category arrays, while enabling restores the plain package source and its default loading behavior. This clears fine-grained `autoload`, glob, and `+/-/!` filters. Use **Manage Resources** instead when those filters must be preserved. Resource Center blocks disabling its own package from inside `/resource`; use Pi's native `pi config` if that is intentional.
-
-For package-contained extensions, skills, and prompts, the detail view also includes a **Show in Category** / **Hide from Category** action.
-
-### Add view
-
-Open from browser or detail views with `A`.
-
-- Default scope follows the current resource context (`project` or `user`)
-- `Tab` — switch scope
-- Type to enter a source or local path
-- Inline suggestions appear for local paths and common source prefixes
-- `Up/Down` — choose a suggestion or disambiguation candidate
-- `Enter` — accept the selected suggestion or add the current source
-- Long-running add/install operations show a widget above the editor and continue even if you leave the Resource Center view
-- Multiple add/update operations can run at the same time; each operation keeps its own status line until it finishes
-- `Esc` — close the Add view
-
-### Settings view
-
-Open from anywhere in the Resource Center TUI via `Shift+S`.
-
-- `Left/Right` or `Tab` — switch settings tabs (`All`, `Display`, `Packages`, `Search`, `Integrations`)
-- Type to filter settings (search matches setting labels and descriptions)
-- `Up/Down` — move selection
-- `Enter` — change the selected setting or edit an integration path inline
-- `Space` — toggle the selected integration on/off
-- `Reload behavior` setting supports three modes: `Only show /reload hint`, `Ask before reload`, and `Reload automatically`
-- `A` — add a custom external skill source in the `Integrations` tab
-- `R` — remove the selected custom external skill source in the `Integrations` tab
-- `Esc` — close settings or cancel inline editing
+- Enabled sources are synchronized into Pi's `settings.json` `skills` entries so Pi owns directory discovery.
+- Codex plugin skills are grouped by plugin in the Skills browser and get **stable IDs** (`source + plugin + relative path`), so disabled skills stay disabled across Codex cache or version changes. Disabled state lives in Resource Center settings, not in Codex paths.
+- The Codex Plugins integration only syncs plugins that don't declare `apps` (app-backed plugins may need Codex/OpenAI runtime Pi can't provide).
 
 ## Plugin settings
 
-Resource Center stores its own UI preferences and "exposed" package resource state in a separate file (not in Pi's `settings.json`):
+Resource Center stores its own state (preferences, pins, exposed resources, disabled external skill IDs, external sources, sync entries) in a separate file, not in Pi's `settings.json`:
 
-- Windows: `C:\\Users\\<you>\\.pi\\agent\\pi-resource-center-settings.json`
+- Windows: `C:\Users\<you>\.pi\agent\pi-resource-center-settings.json`
 - macOS/Linux: `~/.pi/agent/pi-resource-center-settings.json`
 
-When `PI_CODING_AGENT_DIR` is set, Resource Center uses that directory instead of the default `~/.pi/agent` location.
-
-This file stores the Resource Center's own UI preferences together with pinned resources, exposed package-resource state, stable disabled external skill IDs, configured external skill sources, exact external-skill sync entries, and the reload behavior used after settings changes.
-
-Stale `pinned` and `exposedResources` entries are pruned automatically when the plugin refreshes and before settings are saved.
-
-> Older versions used `resource-hub.json`. It is safe to delete legacy `resource-hub.json` files once you've confirmed your `exposedResources` are present in the settings file.
-
-## Discovery model
-
-The package discovers resources in both **project** and **user** scope.
-
-### Project scope
-
-- `.pi/settings.json`
-- conventional folders under `.pi/`
-  - `extensions/`
-  - `skills/`
-  - `prompts/`
-  - `themes/`
-- Agent Skills standard folders under `.agents/skills/` in the current directory and its ancestors
-
-### User scope
-
-- `~/.pi/agent/settings.json`
-- conventional folders under `~/.pi/agent/`
-  - `extensions/`
-  - `skills/`
-  - `prompts/`
-  - `themes/`
-- external skill source directories configured in Resource Center settings (Claude/Codex/Codex Plugins/OpenCode/custom)
-
-### Package sources
-
-Configured package sources are read from Pi settings, including filtered package entries and `autoload: false` project deltas. For local package sources, the browser also inspects contained resources and shows counts for:
-
-- extensions
-- skills
-- prompts
-- themes
-
-By default, `extensions`, `skills`, and `prompts` focus on top-level resources. Package-contained resources for those categories are managed from the package detail view instead.
-
-From a package-contained extension, skill, or prompt detail view, you can explicitly show or hide that resource in its top-level category. Exposed package resources keep a package marker so their origin stays visible.
-
-Enabled external skill sources are synchronized into Pi core `settings.json` `skills` entries so Pi handles directory discovery consistently. Codex-owned skills use normalized source labels such as `codex:skills` for the main Codex skills root and `codex:<plugin-name>` for Codex plugin skills. The Codex Plugins integration scans `~/.codex/plugins` recursively for `.codex-plugin/plugin.json` manifests and only syncs plugin skill directories from plugins that do not declare `apps`, because app-backed plugins may require Codex/OpenAI connector runtime that Pi cannot provide. When a Codex plugin contributes multiple skills, the Skills browser groups them under the plugin so they can be expanded or toggled together.
-
-Codex plugin skills also get stable Resource Center IDs derived from the external source id, plugin name, and skill-relative path. Disabled Codex plugin skills are stored in Resource Center settings by those stable IDs instead of Codex cache/runtime absolute paths, so Codex plugin version or cache directory changes do not re-enable previously disabled skills.
-
-Themes are the exception: package-provided themes are still surfaced in the `themes` category by default so they remain easy to discover and apply.
-
-Supported remote source prefixes:
-
-- `npm:`
-- `git:`
-- `http://`
-- `https://`
+Honors `PI_CODING_AGENT_DIR`. Stale pins/exposures are pruned automatically. Legacy `resource-hub.json` files are safe to delete.
 
 ## Requirements
 
-- Node.js `>=22.19.0`
-- Pi `>=0.79.7`
+- Node.js `>=22.19.0`, Pi `>=0.79.7`
+- Peer dependencies: `@earendil-works/pi-coding-agent >=0.79.7`, `@earendil-works/pi-tui >=0.79.7`
 
-Peer dependencies:
+<details>
+<summary>Alternative install methods</summary>
 
-- `@earendil-works/pi-coding-agent >=0.79.7`
-- `@earendil-works/pi-tui >=0.79.7`
+```bash
+# From GitHub
+pi install https://github.com/sodie2323/pi-resource-center
 
-Resource Center follows Pi's project trust decision. When a project is not trusted, project-local settings, packages, and resources are not discovered or modified.
+# From a local path (loads the folder directly — run /reload after changes)
+pi install .
+pi install E:/code/pi-resource-center
+```
 
-## Notes
-
-- The npm package name is `pi-resource-center`
-- The `/resource` browser defaults to the `packages` category
+</details>
 
 ## License
 

@@ -24,8 +24,9 @@ export function belongsToPackage(item: ResourceItem, pkg: Pick<ResourceItem, "ca
 }
 
 export function getResourceSearchCandidates(item: ResourceItem): string[] {
-	const candidates = [item.id, item.name, item.source, item.description];
+	const candidates = [item.id, item.name, item.source, item.sourceLabel ?? "", item.description];
 	if (item.packageRelativePath) candidates.push(item.packageRelativePath);
 	if ("path" in item && item.path) candidates.push(item.path);
+	if (item.category === "tools") candidates.push(item.toolSourcePath);
 	return candidates;
 }

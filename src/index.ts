@@ -9,14 +9,15 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ResourceCompletionProvider } from "./resource/completions.js";
 import type { ResourceCategory } from "./types.js";
 
-const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes"];
+const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes", "tools"];
 
 let completionProviderPromise: Promise<ResourceCompletionProvider> | undefined;
 let sessionCwd = process.cwd();
 let sessionProjectTrusted = true;
 
-async function getCompletionProvider(): Promise<ResourceCompletionProvider> {
+async function getCompletionProvider(toolRuntime?: ExtensionAPI): Promise<ResourceCompletionProvider> {
 	const completions = await (completionProviderPromise ??= import("./resource/completions.js").then(({ ResourceCompletionProvider }) => new ResourceCompletionProvider()));
+	if (toolRuntime) completions.setToolRuntime(toolRuntime);
 	completions.setCwd(sessionCwd);
 	completions.setProjectTrusted(sessionProjectTrusted);
 	return completions;
@@ -24,13 +25,13 @@ async function getCompletionProvider(): Promise<ResourceCompletionProvider> {
 
 export default function resourceCenter(pi: ExtensionAPI) {
 	pi.registerCommand("resource", {
-		description: "Browse packages, skills, extensions, prompts, and themes",
+		description: "Browse packages, skills, extensions, prompts, themes, and tools",
 		getArgumentCompletions: async (prefix) => {
-			const completions = await getCompletionProvider();
+			const completions = await getCompletionProvider(pi);
 			return completions.getArgumentCompletions(prefix);
 		},
 		handler: async (args, ctx) => {
-			await handleResourceCommand(args, ctx);
+			await handleResourceCommand(args, ctx, pi);
 		},
 	});
 
@@ -42,20 +43,20 @@ export default function resourceCenter(pi: ExtensionAPI) {
 	});
 }
 
-async function handleResourceCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
-	const completions = await getCompletionProvider();
+async function handleResourceCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+	const completions = await getCompletionProvider(pi);
 	completions.setCwd(ctx.cwd);
 	completions.setProjectTrusted(ctx.isProjectTrusted());
 	const [subcommand] = args.trim().split(/\s+/, 1);
 	if (!subcommand) {
 		const { openResourceBrowser } = await import("./resource/browser-open.js");
-		await openResourceBrowser("packages", ctx);
+		await openResourceBrowser("packages", ctx, pi);
 		return;
 	}
 
 	if (isCategory(subcommand)) {
 		const { openResourceBrowser } = await import("./resource/browser-open.js");
-		await openResourceBrowser(subcommand, ctx);
+		await openResourceBrowser(subcommand, ctx, pi);
 		return;
 	}
 
@@ -65,7 +66,7 @@ async function handleResourceCommand(args: string, ctx: ExtensionCommandContext)
 			import("./resource/codex-plugin-inventory.js"),
 		]);
 		clearCodexPluginInventoryCache();
-		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
+		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime: pi });
 		completions.updateFromResources(resources);
 		const count = Object.values(resources.categories).reduce((sum, items) => sum + items.length, 0);
 		ctx.ui.notify(`Discovered ${count} resources`, "info");
@@ -79,15 +80,15 @@ async function handleResourceCommand(args: string, ctx: ExtensionCommandContext)
 		return;
 	}
 	if (subcommand === "remove") {
-		await handleMutateCommand("remove", sliceCommandArgs(args, subcommand), ctx, refresh);
+		await handleMutateCommand("remove", sliceCommandArgs(args, subcommand), ctx, refresh, pi);
 		return;
 	}
 	if (subcommand === "enable") {
-		await handleMutateCommand("enable", sliceCommandArgs(args, subcommand), ctx, refresh);
+		await handleMutateCommand("enable", sliceCommandArgs(args, subcommand), ctx, refresh, pi);
 		return;
 	}
 	if (subcommand === "disable") {
-		await handleMutateCommand("disable", sliceCommandArgs(args, subcommand), ctx, refresh);
+		await handleMutateCommand("disable", sliceCommandArgs(args, subcommand), ctx, refresh, pi);
 		return;
 	}
 	if (subcommand === "expose") {

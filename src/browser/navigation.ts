@@ -37,12 +37,16 @@ export function getDetailTitle(item: ResourceItem): string {
 	return `Resources / ${CATEGORY_LABELS[item.category]} / ${item.name}`;
 }
 
-export function getListFooterText(_selectedCategory: ResourceCategory): string {
-	return "Space toggle · A add · P pin/unpin · Enter details · Esc close";
+export function getListFooterText(selectedCategory: ResourceCategory): string {
+	return selectedCategory === "tools"
+		? "Space toggle · Enter details · Esc close"
+		: "Space toggle · A add · P pin/unpin · Enter details · Esc close";
 }
 
-export function getDetailFooterText(): string {
-	return "Enter confirm · A add · P pin/unpin · Esc back";
+export function getDetailFooterText(item?: ResourceItem): string {
+	return item?.category === "tools"
+		? "Enter confirm · Esc back"
+		: "Enter confirm · A add · P pin/unpin · Esc back";
 }
 
 export function getAddFooterText(loading = false): string {

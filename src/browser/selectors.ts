@@ -2,8 +2,9 @@
  * 浏览器中的资源筛选、排序与 package 内容选择逻辑。
  */
 import type { ResourceCenterSettings } from "../settings.js";
-import { CATEGORY_LABELS, type BrowserListEntry, type PackageContentCategory, type PackageGroupEntry } from "./shared.js";
+import { CATEGORY_LABELS, formatResourceSourceLabel, type BrowserListEntry, type PackageContentCategory, type PackageGroupEntry } from "./shared.js";
 import { belongsToPackage } from "../resource/identity.js";
+import { getToolGroupId } from "../resource/tool-runtime.js";
 import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
 
 export function sortResourceItems(
@@ -57,7 +58,9 @@ export function getVisibleCategoryItems(
 	getPinnedRank: (item: ResourceItem) => number,
 ): ResourceItem[] {
 	const items = resources.categories[category];
-	const visible = category === "packages" || category === "themes" ? items : items.filter((item) => !item.packageSource || item.exposed);
+	const visible = category === "packages" || category === "themes" || category === "tools"
+		? items
+		: items.filter((item) => !item.packageSource || item.exposed);
 	return sortResourceItems(visible, settings, isPinned, getPinnedRank);
 }
 
@@ -109,65 +112,94 @@ export function buildPackageGroupEntries(
 export function buildBrowserListEntries(
 	category: ResourceCategory,
 	items: ResourceItem[],
-	expandedPluginGroupIds: Set<string>,
+	expandedGroupIds: Set<string>,
 	allItems: ResourceItem[] = items,
 ): BrowserListEntry[] {
-	if (category !== "skills") {
+	if (category !== "skills" && category !== "tools") {
 		return items.map((item) => ({ kind: "resource", item }));
 	}
 
-	const pluginItemsById = new Map<string, ResourceItem[]>();
+	const getGroup = (item: ResourceItem): { id: string; name: string; sourceLabel: string } | undefined => {
+		if (item.category === "skills") {
+			const id = item.externalPluginId;
+			const name = item.externalPluginName;
+			return id && name ? { id, name, sourceLabel: `codex:${name}` } : undefined;
+		}
+		if (item.category === "tools") {
+			const label = formatResourceSourceLabel(item);
+			return { id: getToolGroupId(item), name: label, sourceLabel: label };
+		}
+		return undefined;
+	};
+
+	const groupItemsById = new Map<string, ResourceItem[]>();
 	for (const item of allItems) {
-		const pluginId = "externalPluginId" in item ? item.externalPluginId : undefined;
-		const pluginName = "externalPluginName" in item ? item.externalPluginName : undefined;
-		if (!pluginId || !pluginName) continue;
-		const current = pluginItemsById.get(pluginId) ?? [];
+		const group = getGroup(item);
+		if (!group) continue;
+		const current = groupItemsById.get(group.id) ?? [];
 		current.push(item);
-		pluginItemsById.set(pluginId, current);
+		groupItemsById.set(group.id, current);
 	}
-	const visiblePluginItemsById = new Map<string, ResourceItem[]>();
+	const visibleGroupItemsById = new Map<string, ResourceItem[]>();
 	for (const item of items) {
-		const pluginId = "externalPluginId" in item ? item.externalPluginId : undefined;
-		const pluginName = "externalPluginName" in item ? item.externalPluginName : undefined;
-		if (!pluginId || !pluginName) continue;
-		const current = visiblePluginItemsById.get(pluginId) ?? [];
+		const group = getGroup(item);
+		if (!group) continue;
+		const current = visibleGroupItemsById.get(group.id) ?? [];
 		current.push(item);
-		visiblePluginItemsById.set(pluginId, current);
+		visibleGroupItemsById.set(group.id, current);
 	}
 
-	const emittedPluginGroups = new Set<string>();
+	const emittedGroups = new Set<string>();
 	const entries: BrowserListEntry[] = [];
 	for (const item of items) {
-		const pluginId = "externalPluginId" in item ? item.externalPluginId : undefined;
-		const pluginName = "externalPluginName" in item ? item.externalPluginName : undefined;
-		const pluginItems = pluginId ? pluginItemsById.get(pluginId) : undefined;
-		const visiblePluginItems = pluginId ? visiblePluginItemsById.get(pluginId) : undefined;
-		if (!pluginId || !pluginName || !pluginItems || !visiblePluginItems || pluginItems.length <= 1) {
+		const group = getGroup(item);
+		const groupItems = group ? groupItemsById.get(group.id) : undefined;
+		const visibleGroupItems = group ? visibleGroupItemsById.get(group.id) : undefined;
+		if (!group || !groupItems || !visibleGroupItems || groupItems.length <= 1) {
 			entries.push({ kind: "resource", item });
 			continue;
 		}
-		if (emittedPluginGroups.has(pluginId)) continue;
-		emittedPluginGroups.add(pluginId);
-		const expanded = expandedPluginGroupIds.has(pluginId);
+		if (emittedGroups.has(group.id)) continue;
+		emittedGroups.add(group.id);
+		const expanded = expandedGroupIds.has(group.id);
 		entries.push({
-			kind: "plugin-group",
-			pluginId,
-			pluginName,
+			kind: "resource-group",
+			groupId: group.id,
+			groupName: group.name,
 			scope: item.scope,
-			sourceLabel: `codex:${pluginName}`,
-			items: pluginItems,
-			enabledCount: pluginItems.filter((entry) => entry.enabled).length,
-			totalCount: pluginItems.length,
+			sourceLabel: group.sourceLabel,
+			items: groupItems,
+			enabledCount: groupItems.filter((entry) => entry.enabled).length,
+			totalCount: groupItems.length,
 			expanded,
-			updatedAt: pluginItems.reduce<number | undefined>((latest, entry) => {
-				if (entry.updatedAt === undefined) return latest;
-				return latest === undefined ? entry.updatedAt : Math.max(latest, entry.updatedAt);
+			updatedAt: groupItems.reduce<number | undefined>((latest, entry) => {
+				const updatedAt = "updatedAt" in entry ? entry.updatedAt : undefined;
+				if (updatedAt === undefined) return latest;
+				return latest === undefined ? updatedAt : Math.max(latest, updatedAt);
 			}, undefined),
 		});
 		if (!expanded) continue;
-		for (const pluginItem of visiblePluginItems) {
-			entries.push({ kind: "plugin-child", pluginId, item: pluginItem });
+		for (const child of visibleGroupItems) {
+			entries.push({ kind: "resource-child", groupId: group.id, item: child });
 		}
 	}
+	return category === "tools" ? moveBuiltinToolGroupFirst(entries) : entries;
+}
+
+function moveBuiltinToolGroupFirst(entries: BrowserListEntry[]): BrowserListEntry[] {
+	const groupIndex = entries.findIndex((entry) => entry.kind === "resource-group" && entry.items.some((item) => item.category === "tools" && item.builtin));
+	if (groupIndex <= 0) return entries;
+	const groupEntry = entries[groupIndex]!;
+	if (groupEntry.kind !== "resource-group") return entries;
+	const children: BrowserListEntry[] = [];
+	let index = groupIndex + 1;
+	while (index < entries.length) {
+		const entry = entries[index]!;
+		if (entry.kind !== "resource-child" || entry.groupId !== groupEntry.groupId) break;
+		children.push(entry);
+		index += 1;
+	}
+	entries.splice(groupIndex, children.length + 1);
+	entries.unshift(groupEntry, ...children);
 	return entries;
 }

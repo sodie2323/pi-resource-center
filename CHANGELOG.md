@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-08-23
+
+### Added
+- Added a Tools category backed by Pi's live tool inventory, with per-source grouping, search, details, individual toggles, and group toggles.
+- Added `/resource tools` and tool-aware enable/disable commands and completions.
+
+### Changed
+- Built-in tool changes now apply immediately and persist through Pi's native `defaultTools` setting at the effective user or project scope.
+- Extension and SDK tool changes are explicitly session-only and do not disable their providing extension or package.
+- Generalized the existing Codex Skill plugin grouping UI so Skills and Tools share the same resource-group interaction model.
+- Restructured the README around the browser-first workflow and demoted slash commands to a reference table.
+
 ## [0.3.0] - 2026-08-23
 
 ### Added
