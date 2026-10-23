@@ -1,10 +1,10 @@
 /**
  * 浏览器各页面的纯渲染函数。
  */
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { BrowserListEntry, BrowserTheme, DetailAction, PackageContentCategory, PackageGroupEntry, SettingsSection } from "./shared.js";
 import { CATEGORY_LABELS, CATEGORY_ORDER, SETTINGS_SECTION_LABELS, SETTINGS_SECTION_ORDER, SORT_MODE_LABELS, formatResourceSourceLabel } from "./shared.js";
-import { canExposeResource, isContainedResource, isPackageItem } from "../resource/capabilities.js";
+import { canExposeResource, isContainedResource, isPackageItem, isMcpItem } from "../resource/capabilities.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
 
 export function renderHeader(theme: BrowserTheme, width: number, title: string, count: number): string[] {
@@ -24,6 +24,12 @@ export function renderTabs(theme: BrowserTheme, width: number, category: Resourc
 		}
 		return theme.fg("muted", label);
 	}).join(" ");
+	if (visibleWidth(tabs) > width) {
+		const selectedIndex = CATEGORY_ORDER.indexOf(category);
+		const selectedStart = CATEGORY_ORDER.slice(0, selectedIndex).reduce((sum, entry) => sum + visibleWidth(` ${CATEGORY_LABELS[entry]} `) + 1, 0);
+		const start = Math.max(0, Math.min(selectedStart, visibleWidth(tabs) - width));
+		return [sliceByColumn(tabs, start, width)];
+	}
 	return [truncateToWidth(`${tabs}  ${title}`, width, "…")];
 }
 
@@ -90,15 +96,19 @@ export function renderListPage(args: {
 			continue;
 		}
 		const item = entry.item;
-		const toggle = isPackageItem(item) ? formatPackageToggleState(item) : formatBinaryToggle(item.enabled, true);
+		const toggle = isPackageItem(item) ? formatPackageToggleState(item)
+			: isMcpItem(item) ? theme.fg(item.configState === "error" ? "error" : "muted", `[${item.configState === "unknown" ? "runtime" : item.configState === "error" ? "error" : `config:${item.configState === "enabled" ? "on" : "off"}`}]`)
+				: formatBinaryToggle(item.enabled, true);
 		const pinBadge = isPinned(item) ? theme.fg("accent", "[pin] ") : "";
 		const packageBadge = isContainedResource(item) ? theme.fg("accent", theme.bold("[pkg] ")) : "";
 		const overrideBadge = item.category === "tools" && item.overridesBuiltin ? theme.fg("warning", "[override] ") : "";
 		const sessionBadge = item.category === "tools" && !item.builtin ? theme.fg("dim", " [session]") : "";
+		const exposureBadge = item.category === "tools" && item.exposure !== "direct"
+			? theme.fg("dim", ` [${item.exposure}]`) : "";
 		const packageVersion = isPackageItem(item) && item.version ? theme.fg("dim", ` @${item.version}`) : "";
-		const displayName = isPackageItem(item) ? formatResourceSourceLabel(item) : item.name;
+		const displayName = isPackageItem(item) ? formatResourceSourceLabel(item) : isMcpItem(item) ? `${item.name} · ${item.toolNames.length} visible tools` : item.name;
 		const childIndent = entry.kind === "resource-child" ? theme.fg("dim", "   ↳ ") : "";
-		const nameText = `${childIndent}${pinBadge}${packageBadge}${overrideBadge}${displayName}${sessionBadge}${packageVersion}`;
+		const nameText = `${childIndent}${pinBadge}${packageBadge}${overrideBadge}${displayName}${sessionBadge}${exposureBadge}${packageVersion}`;
 		const name = selected ? theme.bold(nameText) : theme.fg("text", nameText);
 		const itemScope = item.scope === "project"
 			? theme.fg("success", "project")
@@ -162,6 +172,18 @@ export function renderDetailPage(args: {
 		if (enabledSummary) lines.push(truncateToWidth(`${theme.fg("muted", "Enabled Resources")}: ${enabledSummary}`, width, "…"));
 		const counts = formatPackageCounts(item, true);
 		if (counts) lines.push(truncateToWidth(`${theme.fg("muted", "Resources")}: ${counts}`, width, "…"));
+	}
+	if (isMcpItem(item) && item.configState !== "error") {
+		const metadata = [
+			`Config: ${item.configState} · ${item.sourceLabel} (not connection status)`,
+			`Transport: ${item.transport ?? "unknown"} · Exposure: ${item.exposure ?? "unknown"}`,
+			`Tools: ${item.activeToolCount}/${item.toolNames.length} registered tools active`,
+			...item.toolNames.slice(0, 3).map((name) => `  ${name}`),
+			...(item.toolNames.length > 3 ? [`  … ${item.toolNames.length - 3} more in Browse Server Tools`] : []),
+			"Resources: not queried; per-server inventory is not exposed by Pi UI API",
+			item.resourceTools.length > 0 ? `Shared access: ${item.resourceTools.join(", ")}` : "Shared resource tools: not registered yet",
+		];
+		lines.push(...metadata.map((line) => truncateToWidth(line, width, "…")));
 	}
 	lines.push("");
 	lines.push(truncateToWidth(theme.fg("accent", theme.bold("Description")), width, "…"));

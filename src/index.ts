@@ -7,17 +7,20 @@
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ResourceCompletionProvider } from "./resource/completions.js";
+import type { ThemeRuntime } from "./resource/discovery.js";
 import type { ResourceCategory } from "./types.js";
 
-const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes", "tools"];
+const CATEGORIES: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes", "tools", "mcp"];
 
 let completionProviderPromise: Promise<ResourceCompletionProvider> | undefined;
 let sessionCwd = process.cwd();
 let sessionProjectTrusted = true;
+let sessionThemeRuntime: ThemeRuntime | undefined;
 
 async function getCompletionProvider(toolRuntime?: ExtensionAPI): Promise<ResourceCompletionProvider> {
 	const completions = await (completionProviderPromise ??= import("./resource/completions.js").then(({ ResourceCompletionProvider }) => new ResourceCompletionProvider()));
 	if (toolRuntime) completions.setToolRuntime(toolRuntime);
+	completions.setThemeRuntime(sessionThemeRuntime);
 	completions.setCwd(sessionCwd);
 	completions.setProjectTrusted(sessionProjectTrusted);
 	return completions;
@@ -25,7 +28,7 @@ async function getCompletionProvider(toolRuntime?: ExtensionAPI): Promise<Resour
 
 export default function resourceCenter(pi: ExtensionAPI) {
 	pi.registerCommand("resource", {
-		description: "Browse packages, skills, extensions, prompts, themes, and tools",
+		description: "Browse packages, skills, extensions, prompts, themes, tools, and MCP servers",
 		getArgumentCompletions: async (prefix) => {
 			const completions = await getCompletionProvider(pi);
 			return completions.getArgumentCompletions(prefix);
@@ -40,11 +43,13 @@ export default function resourceCenter(pi: ExtensionAPI) {
 		// 或首次需要资源补全时按需执行，避免拖慢 Pi 启动。
 		sessionCwd = ctx.cwd;
 		sessionProjectTrusted = ctx.isProjectTrusted();
+		sessionThemeRuntime = ctx.ui;
 	});
 }
 
 async function handleResourceCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const completions = await getCompletionProvider(pi);
+	completions.setThemeRuntime(ctx.ui);
 	completions.setCwd(ctx.cwd);
 	completions.setProjectTrusted(ctx.isProjectTrusted());
 	const [subcommand] = args.trim().split(/\s+/, 1);
@@ -66,7 +71,7 @@ async function handleResourceCommand(args: string, ctx: ExtensionCommandContext,
 			import("./resource/codex-plugin-inventory.js"),
 		]);
 		clearCodexPluginInventoryCache();
-		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime: pi });
+		const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime: pi, themeRuntime: ctx.ui });
 		completions.updateFromResources(resources);
 		const count = Object.values(resources.categories).reduce((sum, items) => sum + items.length, 0);
 		ctx.ui.notify(`Discovered ${count} resources`, "info");

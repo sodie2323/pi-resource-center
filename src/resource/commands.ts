@@ -3,7 +3,7 @@
  */
 import { DefaultPackageManager, SettingsManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { discoverResources } from "./discovery.js";
-import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isResourceCenterPackage, isThemeItem, isToolItem } from "./capabilities.js";
+import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isResourceCenterPackage, isThemeItem, isToolItem, isMcpItem } from "./capabilities.js";
 import { getResourceSearchCandidates } from "./identity.js";
 import {
 	getExposeSuccessMessage,
@@ -12,13 +12,13 @@ import {
 	getRemoveSuccessMessage,
 	getToggleSuccessMessage,
 } from "./messages.js";
-import { USER_AGENT_DIR, addPathResourceToSettings, getProjectSettingsPath, getUserSettingsPath, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setDefaultTools, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import { USER_AGENT_DIR, addPathResourceToSettings, getProjectSettingsPath, getUserSettingsPath, readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, setActiveTheme, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import { normalizeCategoryAlias } from "./completions.js";
 import { detectAddTarget, getAddTargetSuccessLabel, type AddPathCategory } from "./add-detect.js";
 import { buildSuccessOperationMessage } from "./operation-status.js";
 import type { ReloadBehavior } from "../settings.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
-import type { ToolRuntime } from "./tool-runtime.js";
+import { getToolToggleMessage, setToolsEnabled, type ToolRuntime } from "./tool-runtime.js";
 
 export async function handleAddCommand(
 	args: string,
@@ -40,6 +40,10 @@ export async function handleAddCommand(
 	if (parts[0] && isCategoryAlias(parts[0])) {
 		const normalized = normalizeCategoryAlias(parts[0]);
 		parts.shift();
+		if (normalized === "mcp") {
+			ctx.ui.notify("MCP servers are managed with native /mcp or pi mcp add", "warning");
+			return;
+		}
 		if (normalized === "tools") {
 			ctx.ui.notify("Tools are registered by Pi and extensions and cannot be added directly", "warning");
 			return;
@@ -85,7 +89,7 @@ export async function handleMutateCommand(
 		return;
 	}
 
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime });
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime, themeRuntime: ctx.ui });
 	const matches = findResources(resources, query, category);
 	if (matches.length === 0) {
 		ctx.ui.notify(`No resource found for "${query}"`, "warning");
@@ -98,6 +102,10 @@ export async function handleMutateCommand(
 	}
 
 	const item = matches[0]!;
+	if (isMcpItem(item)) {
+		ctx.ui.notify("Manage MCP server configuration, connections and exposure with native /mcp", "warning");
+		return;
+	}
 	if (action === "remove") {
 		if (!canRemoveResourceIndividually(item)) {
 			ctx.ui.notify(getRemoveBlockedMessage(item) ?? "Remove is not allowed for this resource.", "warning");
@@ -117,22 +125,9 @@ export async function handleMutateCommand(
 
 	if (isToolItem(item)) {
 		const enabled = action === "enable";
-		const active = new Set(toolRuntime.getActiveTools());
-		if (enabled) active.add(item.name); else active.delete(item.name);
-		let settingsPath: string | undefined;
-		if (item.builtin) {
-			if (item.scope === "session") throw new Error("Built-in tools require user or project scope");
-			const builtinNames = new Set(toolRuntime.getAllTools().filter((tool) => tool.sourceInfo.source === "builtin").map((tool) => tool.name));
-			settingsPath = await setDefaultTools(
-				ctx.cwd,
-				[...active].filter((name) => builtinNames.has(name)),
-				item.scope,
-				ctx.isProjectTrusted(),
-			);
-		}
-		toolRuntime.setActiveTools([...active]);
+		const settingsPath = await setToolsEnabled(toolRuntime, [item], enabled, ctx.cwd, ctx.isProjectTrusted());
 		await refreshCompletions();
-		ctx.ui.notify(`${enabled ? "Enabled" : "Disabled"} tool ${item.name}${settingsPath ? ` · ${settingsPath}` : " · current session"}`, "info");
+		ctx.ui.notify(getToolToggleMessage(item, enabled, settingsPath), "info");
 		return;
 	}
 
@@ -196,7 +191,7 @@ export async function handleExposureCommand(
 		return;
 	}
 
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted() });
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), themeRuntime: ctx.ui });
 	const matches = findResources(resources, query, category);
 	if (matches.length === 0) {
 		ctx.ui.notify(`No resource found for "${query}"`, "warning");
@@ -305,5 +300,5 @@ export function findResources(resources: { categories: Record<ResourceCategory, 
 }
 
 function isCategoryAlias(value: string): boolean {
-	return ["package", "packages", "skill", "skills", "extension", "extensions", "prompt", "prompts", "theme", "themes", "tool", "tools"].includes(value);
+	return ["package", "packages", "skill", "skills", "extension", "extensions", "prompt", "prompts", "theme", "themes", "tool", "tools", "mcp"].includes(value);
 }

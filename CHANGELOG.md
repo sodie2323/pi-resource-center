@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-10-23
+
+### Breaking Changes
+- Raised the minimum supported Pi version to 1.4.0. Node.js 22.19.0 or newer is still required.
+
+### Added
+- Added a dedicated MCP server category and `/resource mcp`, showing read-only configuration/registration summaries, associated tools, and shared resource-access tools, with handoff to native `/mcp` for management. Per-server resources remain explicitly unqueried because Pi does not expose that inventory through its extension command API.
+- Added discovery and enable/disable support for Pi's built-in extensions, including trusted project overrides and protection against removal.
+- Added MCP namespace grouping and tool exposure badges, omitting withdrawn `hidden` tools and clarifying that inactive `codemode`/`deferred` tools remain indirectly callable.
+
+### Changed
+- Theme discovery now reads Pi's runtime inventory instead of hardcoding built-in names, merging file/package metadata and preserving resource identities, scope, and active package summaries.
+- Native `codemode` and `tool_search` selections now persist through `defaultTools`; other MCP tools remain session/branch selections rather than being mistaken for persistent built-ins.
+- Pinned development dependencies to Pi 1.4.0 and expanded compatibility, runtime, and TUI regression coverage.
+
+### Fixed
+- Tool toggles now preserve unrelated `defaultTools` entries, incremental modifiers, inherited settings, and explicit empty allowlists instead of saving the current session's tool snapshot.
+- Serialized tool/default-tool mutations to avoid lost concurrent changes.
+- Handle BOM-prefixed settings, plugin state, theme/package metadata, and Codex plugin manifests consistently with Pi.
+
+### Known Limitations
+- Resource Center does not save and restore extension/SDK/MCP tool selections across `/reload`; Pi may reactivate tools registered active by default. Tool activation is not a permission boundary.
+
 ## [0.3.1] - 2026-08-23
 
 ### Added

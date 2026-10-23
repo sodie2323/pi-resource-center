@@ -3,7 +3,7 @@
  */
 import { access, readdir } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
-import { discoverResources } from "./discovery.js";
+import { discoverResources, type ThemeRuntime } from "./discovery.js";
 import type { ToolRuntime } from "./tool-runtime.js";
 import { PROJECT_AGENT_DIR } from "../settings.js";
 import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
@@ -22,6 +22,7 @@ const ROOT_COMPLETIONS = [
 	{ value: "prompts", description: "Open the prompts browser" },
 	{ value: "themes", description: "Open the themes browser" },
 	{ value: "tools", description: "Open the active tools browser" },
+	{ value: "mcp", description: "Browse MCP servers and their tools/resource access" },
 ] as const;
 const ADD_SOURCE_COMPLETIONS = [
 	{ value: "npm:", description: "Install a package from npm, for example npm:pi-resource-center" },
@@ -66,6 +67,7 @@ export const CATEGORY_ALIAS_MAP: Record<string, ResourceCategory> = {
 	themes: "themes",
 	tool: "tools",
 	tools: "tools",
+	mcp: "mcp",
 };
 
 export class ResourceCompletionProvider {
@@ -76,8 +78,9 @@ export class ResourceCompletionProvider {
 		prompts: [],
 		themes: [],
 		tools: [],
+		mcp: [],
 	};
-	private exposureCompletionCache: Record<Exclude<ResourceCategory, "packages" | "themes" | "tools">, string[]> = {
+	private exposureCompletionCache: Record<Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">, string[]> = {
 		skills: [],
 		extensions: [],
 		prompts: [],
@@ -85,6 +88,7 @@ export class ResourceCompletionProvider {
 	private completionCwd = process.cwd();
 	private projectTrusted = true;
 	private toolRuntime: ToolRuntime | undefined;
+	private themeRuntime: ThemeRuntime | undefined;
 	private initialized = false;
 
 	setCwd(cwd: string): void {
@@ -102,9 +106,14 @@ export class ResourceCompletionProvider {
 		this.toolRuntime = toolRuntime;
 	}
 
+	setThemeRuntime(themeRuntime: ThemeRuntime | undefined): void {
+		if (this.themeRuntime !== themeRuntime) this.initialized = false;
+		this.themeRuntime = themeRuntime;
+	}
+
 	async refresh(cwd: string, currentTheme?: string): Promise<void> {
 		this.completionCwd = cwd;
-		const resources = await discoverResources(cwd, currentTheme, { projectTrusted: this.projectTrusted, toolRuntime: this.toolRuntime });
+		const resources = await discoverResources(cwd, currentTheme, { projectTrusted: this.projectTrusted, toolRuntime: this.toolRuntime, themeRuntime: this.themeRuntime });
 		this.updateFromResources(resources);
 	}
 
@@ -116,6 +125,7 @@ export class ResourceCompletionProvider {
 			prompts: uniqueCompletionValues(resources.categories.prompts),
 			themes: uniqueCompletionValues(resources.categories.themes),
 			tools: uniqueCompletionValues(resources.categories.tools),
+			mcp: uniqueCompletionValues(resources.categories.mcp),
 		};
 		this.exposureCompletionCache = {
 			skills: uniqueCompletionValues(resources.categories.skills.filter((item) => item.packageSource)),
@@ -173,7 +183,7 @@ export class ResourceCompletionProvider {
 			}
 			if (!isCategoryAlias(parts[1]!)) return null;
 			const category = normalizeCategoryAlias(parts[1]!);
-			if (category === "packages" || category === "themes" || category === "tools") return null;
+			if (category === "packages" || category === "themes" || category === "tools" || category === "mcp") return null;
 			const current = endsWithSpace ? "" : (parts[parts.length - 1] ?? "");
 			return buildScopedCompletionItems(this.exposureCompletionCache[category], current, `${command} ${parts[1]!} `);
 		}

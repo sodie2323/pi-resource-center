@@ -4,6 +4,7 @@
  */
 import { readFile, readdir, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import { stripBom } from "../json.js";
 import { basename, dirname, resolve } from "node:path";
 
 export interface CodexPluginInventoryEntry {
@@ -103,7 +104,7 @@ async function readCodexPluginManifest(path: string): Promise<{
 	hasApps: boolean;
 } | undefined> {
 	try {
-		const parsed = JSON.parse(await readFile(path, "utf8")) as {
+		const parsed = JSON.parse(stripBom(await readFile(path, "utf8"))) as {
 			name?: unknown;
 			description?: unknown;
 			skills?: unknown;

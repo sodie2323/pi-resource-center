@@ -1,7 +1,7 @@
 {
 	"name": "pi-resource-center",
-	"version": "0.3.1",
-	"description": "Pi package for browsing packages, skills, extensions, prompts, themes, and tools",
+	"version": "0.4.0",
+	"description": "Pi package for browsing packages, skills, extensions, prompts, themes, tools, and MCP servers",
 	"type": "module",
 	"engines": {
 		"node": ">=22.19.0"
@@ -38,10 +38,12 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": ">=0.79.7",
-		"@earendil-works/pi-tui": ">=0.79.7"
+		"@earendil-works/pi-coding-agent": ">=1.4.0",
+		"@earendil-works/pi-tui": ">=1.4.0"
 	},
 	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "1.4.0",
+		"@earendil-works/pi-tui": "1.4.0",
 		"@types/node": "^24.0.0",
 		"typescript": "^5.9.3"
 	},

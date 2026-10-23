@@ -8,7 +8,7 @@ import type { ResourceCenterSettings } from "../settings.js";
 export type { ResourceSortMode } from "../settings.js";
 import type { ResourceCategory, ResourceItem, ToolResourceScope } from "../types.js";
 
-export const CATEGORY_ORDER: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes", "tools"];
+export const CATEGORY_ORDER: ResourceCategory[] = ["packages", "skills", "extensions", "prompts", "themes", "tools", "mcp"];
 
 export const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	packages: "Packages",
@@ -17,11 +17,12 @@ export const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	prompts: "Prompts",
 	themes: "Themes",
 	tools: "Tools",
+	mcp: "MCP",
 };
 
 export type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems" | "settings" | "add";
-export type DetailAction = "manage" | "toggle" | "pin" | "expose" | "update" | "remove" | "back";
-export type PackageContentCategory = Exclude<ResourceCategory, "packages" | "tools">;
+export type DetailAction = "manage" | "toggle" | "pin" | "expose" | "update" | "remove" | "mcp-manager" | "mcp-tools" | "back";
+export type PackageContentCategory = Exclude<ResourceCategory, "packages" | "tools" | "mcp">;
 export const PACKAGE_CONTENT_CATEGORIES: PackageContentCategory[] = ["extensions", "skills", "prompts", "themes"];
 
 export type SettingsSection = "all" | "display" | "packages" | "search" | "integrations";
@@ -103,6 +104,7 @@ export interface AddResourceRequest {
 export interface BrowserCallbacks {
 	onClose: () => void | Promise<void>;
 	onInspect?: (item: ResourceItem) => void;
+	onManageMcp?: () => void;
 	onToggle?: (item: ResourceItem) => void;
 	onToggleGroup?: (items: ResourceItem[], enabled: boolean, label: string) => void | Promise<void>;
 	onExpose?: (item: ResourceItem) => void;

@@ -3,6 +3,7 @@
  */
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ResourceBrowser } from "../browser/browser.js";
+import { openNativeMcpManager } from "./mcp.js";
 import { discoverResources } from "./discovery.js";
 import { canRemoveResourceIndividually, isPackageItem, isResourceCenterPackage, isThemeItem, isToolItem, supportsPackageUpdate } from "./capabilities.js";
 import { buildSuccessOperationMessage, ResourceOperationStatusController } from "./operation-status.js";
@@ -17,9 +18,9 @@ import {
 	getToggleSuccessMessage,
 } from "./messages.js";
 import { addResourceFromInput, reloadAfterSettingsChange, updatePackageSource } from "./commands.js";
-import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setDefaultTools, setExternalSkillEnabled, setExternalSkillsEnabled, setResourceExposed, toggleResourceInSettings } from "../settings.js";
+import { readResourceCenterSettings, removeConventionResource, removeResourceFromSettings, saveResourceCenterSettings, setActiveTheme, setExternalSkillEnabled, setExternalSkillsEnabled, setResourceExposed, toggleResourceInSettings } from "../settings.js";
 import type { ResourceCategory, ResourceItem, ToolResourceItem } from "../types.js";
-import type { ToolRuntime } from "./tool-runtime.js";
+import { getToolToggleMessage, setToolsEnabled, type ToolRuntime } from "./tool-runtime.js";
 
 export async function openResourceBrowser(category: ResourceCategory, ctx: ExtensionCommandContext, toolRuntime: ToolRuntime): Promise<void> {
 	if (ctx.mode !== "tui") {
@@ -27,16 +28,18 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		return;
 	}
 	const resourceCenterSettings = await readResourceCenterSettings();
-	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime });
+	const resources = await discoverResources(ctx.cwd, ctx.ui.theme.name, { projectTrusted: ctx.isProjectTrusted(), toolRuntime, themeRuntime: ctx.ui });
 	let currentResourceCenterSettings = resourceCenterSettings;
 	let hasPendingChanges = false;
+	let requestMcpManager = false;
+	let closeWork: Promise<void> | undefined;
 
 	await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
 		let browserOpen = true;
 		let browser!: ResourceBrowser;
 		let refreshGeneration = 0;
 		let settingsSaveQueue: Promise<void> = Promise.resolve();
-		let toolMutationQueue: Promise<void> = Promise.resolve();
+		let toolMutationQueue: Promise<unknown> = Promise.resolve();
 		const requestRender = () => {
 			if (browserOpen) tui.requestRender();
 		};
@@ -46,6 +49,7 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				projectTrusted: ctx.isProjectTrusted(),
 				syncExternalSkills: false,
 				toolRuntime,
+				themeRuntime: ctx.ui,
 			});
 			if (!browserOpen || generation !== refreshGeneration) return;
 			browser.setResources(nextResources);
@@ -64,30 +68,9 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			browser.setActionMessage(action, type, text);
 			requestRender();
 		};
-		const setToolsEnabledNow = async (items: ToolResourceItem[], enabled: boolean): Promise<string | undefined> => {
-			const active = new Set(toolRuntime.getActiveTools());
-			for (const item of items) {
-				if (enabled) active.add(item.name); else active.delete(item.name);
-			}
-			const builtinItem = items.find((item) => item.builtin);
-			let settingsPath: string | undefined;
-			if (builtinItem) {
-				const scope = builtinItem.scope;
-				if (scope === "session") throw new Error("Built-in tools require user or project scope");
-				const builtinNames = new Set(
-					toolRuntime.getAllTools()
-						.filter((tool) => tool.sourceInfo.source === "builtin")
-						.map((tool) => tool.name),
-				);
-				const activeBuiltinNames = [...active].filter((name) => builtinNames.has(name));
-				settingsPath = await setDefaultTools(ctx.cwd, activeBuiltinNames, scope, ctx.isProjectTrusted());
-			}
-			toolRuntime.setActiveTools([...active]);
-			return settingsPath;
-		};
-		const setToolsEnabled = (items: ToolResourceItem[], enabled: boolean): Promise<string | undefined> => {
-			const operation = toolMutationQueue.then(() => setToolsEnabledNow([...items], enabled));
-			toolMutationQueue = operation.then(() => undefined, () => undefined);
+		const updateTools = (items: ToolResourceItem[], enabled: boolean): Promise<string | undefined> => {
+			const operation = setToolsEnabled(toolRuntime, [...items], enabled, ctx.cwd, ctx.isProjectTrusted());
+			toolMutationQueue = operation.catch(() => undefined);
 			return operation;
 		};
 		const closeBrowser = async () => {
@@ -96,6 +79,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			done(undefined);
 			await Promise.all([settingsSaveQueue, toolMutationQueue]);
 			if (!hasPendingChanges) return;
+			if (requestMcpManager) {
+				ctx.ui.notify("Other resource settings were saved. Run /reload to apply them.", "info");
+				return;
+			}
 			await reloadAfterSettingsChange(ctx, "Resource settings saved", currentResourceCenterSettings.reloadBehavior);
 		};
 		const startUpdateSpinner = (source: string) => {
@@ -138,12 +125,12 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					return;
 				}
 				if (isToolItem(item)) {
-					const settingsPath = await setToolsEnabled([item], item.enabled);
+					const settingsPath = await updateTools([item], item.enabled);
 					await refreshBrowser();
 					setActionMessage(
 						"toggle",
 						"info",
-						`${item.enabled ? "Enabled" : "Disabled"} tool ${item.name}${settingsPath ? ` · ${settingsPath}` : " · current session"}`,
+						getToolToggleMessage(item, item.enabled, settingsPath),
 					);
 					return;
 				}
@@ -178,12 +165,12 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 				if (items.every(isToolItem)) {
 					const changedItems = items.filter((item) => item.enabled !== enabled);
 					for (const item of changedItems) item.enabled = enabled;
-					const settingsPath = await setToolsEnabled(changedItems, enabled);
+					const settingsPath = await updateTools(changedItems, enabled);
 					await refreshBrowser();
 					setActionMessage(
 						"toggle",
 						"info",
-						`${enabled ? "Enabled" : "Disabled"} ${changedItems.length} tools in ${label}${settingsPath ? ` · ${settingsPath}` : " · current session"}`,
+						`${enabled ? "Activated" : "Deactivated"} ${changedItems.length} tools in ${label}${settingsPath ? ` · ${settingsPath}` : " · current session"}${!enabled && changedItems.some((item) => item.exposure === "codemode" || item.exposure === "deferred") ? " · still callable through codemode/tool search" : ""}`,
 					);
 					return;
 				}
@@ -263,7 +250,11 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 
 		browser = new ResourceBrowser(theme, resources, category, resourceCenterSettings, {
-			onClose: closeBrowser,
+			onClose: () => (closeWork = closeBrowser()),
+			onManageMcp: () => {
+				requestMcpManager = true;
+				closeWork = closeBrowser();
+			},
 			onInspect: undefined,
 			onToggle: (item) => void toggleItem(item),
 			onToggleGroup: (items, enabled, label) => void toggleGroup(items, enabled, label),
@@ -299,4 +290,6 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			},
 		};
 	});
+	await closeWork;
+	if (requestMcpManager) openNativeMcpManager(toolRuntime, ctx);
 }

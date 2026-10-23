@@ -4,7 +4,7 @@
 import type { Input, KeybindingsManager, SettingsList } from "@earendil-works/pi-tui";
 import { getDetailActions } from "./actions.js";
 import { moveSelection } from "./navigation.js";
-import { canExposeResource, canManagePackageContents, isPackageItem, isToolItem, supportsPackageUpdate } from "../resource/capabilities.js";
+import { canExposeResource, canManagePackageContents, isPackageItem, isToolItem, isMcpItem, supportsPackageUpdate } from "../resource/capabilities.js";
 import { getPackageResourceId } from "../resource/identity.js";
 import type { BrowserListEntry, BrowserMode, PackageContentCategory, PackageGroupEntry } from "./shared.js";
 import type { ResourceItem } from "../types.js";
@@ -18,6 +18,7 @@ export function handleListInput(data: string, args: {
 	onMoveCategory: (direction: 1 | -1) => void;
 	onMoveSelection: (delta: number) => void;
 	onOpenSelectedItem: () => void;
+	onManageMcp?: () => void;
 	onTogglePinned: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
 	onToggleGroup?: (items: ResourceItem[], enabled: boolean, label: string) => void;
@@ -28,6 +29,7 @@ export function handleListInput(data: string, args: {
 }): void {
 	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
+	if (data === "M" && args.onManageMcp) return args.onManageMcp();
 	if (kb.matches(data, "tui.select.cancel")) return void args.onClose();
 	if (kb.matches(data, "tui.editor.cursorLeft")) return args.onMoveCategory(-1);
 	if (kb.matches(data, "tui.editor.cursorRight")) return args.onMoveCategory(1);
@@ -70,6 +72,8 @@ export function handleDetailInput(data: string, args: {
 	onExitDetailMode: () => void;
 	onTogglePinned: (item: ResourceItem) => void;
 	onOpenPackageGroups: (item: ResourceItem) => void;
+	onManageMcp?: () => void;
+	onBrowseMcpTools?: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
 	onToggleExpose: (item: ResourceItem) => void;
 	onUpdateItem: (item: ResourceItem) => void;
@@ -122,6 +126,11 @@ export function handleDetailInput(data: string, args: {
 	}
 	if (action === "update" && isPackageItem(args.detailItem) && !supportsPackageUpdate(args.detailItem)) return;
 	switch (action) {
+		case "mcp-manager":
+			return args.onManageMcp?.();
+		case "mcp-tools":
+			if (isMcpItem(args.detailItem)) args.onBrowseMcpTools?.(args.detailItem);
+			return;
 		case "manage":
 			if (canManagePackageContents(args.detailItem)) args.onOpenPackageGroups(args.detailItem);
 			return;

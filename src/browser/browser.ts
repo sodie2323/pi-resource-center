@@ -75,7 +75,7 @@ import {
 	handleSettingsInput as handleSettingsInputMode,
 } from "./input.js";
 import { getAddFooterText, getDetailFooterText, getEmptyPackageCategoryMessage, getHeaderTitle, getListFooterText, getPackageFooterText, moveSelection } from "./navigation.js";
-import { isContainedResource, isPackageItem, isThemeItem } from "../resource/capabilities.js";
+import { isContainedResource, isPackageItem, isThemeItem, isMcpItem } from "../resource/capabilities.js";
 import { getPackageResourceId, isSameResource } from "../resource/identity.js";
 import { prunePinnedResourceIds } from "../resource/state-prune.js";
 import type { AddPathCategory } from "../resource/add-detect.js";
@@ -248,10 +248,11 @@ export class ResourceBrowser implements Component, Focusable {
 			onMoveCategory: (direction) => this.moveCategory(direction),
 			onMoveSelection: (delta) => this.moveListSelection(delta),
 			onOpenSelectedItem: () => this.openSelectedItem(),
+			onManageMcp: this.category === "mcp" ? this.callbacks.onManageMcp : undefined,
 			onTogglePinned: (item) => this.togglePinned(item),
 			onToggleItem: (item) => this.toggleItem(item),
 			onToggleGroup: (items, enabled, label) => this.toggleResourceGroup(items, enabled, label),
-			onAddResource: this.category === "tools" ? undefined : () => this.openAddMode(),
+			onAddResource: this.category === "tools" || this.category === "mcp" ? undefined : () => this.openAddMode(),
 			onCycleSortMode: () => this.cycleSortMode(),
 			searchInput: this.mainSearchInput,
 			onApplyFilter: () => this.applyFilter(),
@@ -518,11 +519,20 @@ export class ResourceBrowser implements Component, Focusable {
 			onExitDetailMode: () => this.exitDetailMode(),
 			onTogglePinned: (item) => this.togglePinned(item),
 			onOpenPackageGroups: (item) => this.openPackageGroups(item),
+			onManageMcp: this.callbacks.onManageMcp,
+			onBrowseMcpTools: (item) => {
+				if (!isMcpItem(item)) return;
+				this.mode = "list";
+				this.category = "tools";
+				this.mainSearchInput.setValue(`${item.namespace}__`);
+				this.selectedIndex = 0;
+				this.applyFilter();
+			},
 			onToggleItem: (item) => this.toggleItem(item),
 			onToggleExpose: (item) => this.toggleExpose(item),
 			onUpdateItem: (item) => this.callbacks.onUpdate?.(item),
 			onRemoveItem: (item) => this.callbacks.onRemove?.(item),
-			onAddResource: this.detailItem?.category === "tools" ? undefined : () => this.openAddMode(),
+			onAddResource: this.detailItem?.category === "tools" || this.detailItem?.category === "mcp" ? undefined : () => this.openAddMode(),
 		});
 	}
 
@@ -888,6 +898,7 @@ export class ResourceBrowser implements Component, Focusable {
 					item.sourceLabel ?? "",
 					formatResourceSourceLabel(item),
 					item.scope,
+					item.category === "tools" ? item.exposure : isMcpItem(item) ? `${item.exposure ?? ""} ${item.configState} ${item.transport ?? ""} ${item.namespace} ${item.toolNames.join(" ")}` : "",
 					item.category,
 					CATEGORY_LABELS[item.category],
 					isContainedResource(item) ? "pkg package" : "",
@@ -938,6 +949,10 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private toggleItem(item: ResourceItem): void {
+		if (isMcpItem(item)) {
+			this.callbacks.onManageMcp?.();
+			return;
+		}
 		if (!isThemeItem(item)) {
 			item.enabled = !item.enabled;
 		}

@@ -7,20 +7,24 @@ import {
 	canManagePackageContents,
 	canRemoveResourceIndividually,
 	isContainedResource,
+	isBuiltinExtension,
 	isPackageItem,
 	isResourceCenterPackage,
 	isThemeItem,
 	isToolItem,
+	isMcpItem,
 	supportsPackageUpdate,
 } from "../resource/capabilities.js";
 import type { ResourceItem } from "../types.js";
 
 export function getDetailActions(item: ResourceItem): DetailAction[] {
+	if (isMcpItem(item)) return item.configState === "error" ? ["mcp-manager", "back"] : ["mcp-manager", "mcp-tools", "pin", "back"];
 	if (isToolItem(item)) return ["toggle", "back"];
+	if (isBuiltinExtension(item)) return ["toggle", "pin", "back"];
 	if (isPackageItem(item)) return ["manage", "toggle", "pin", "update", "remove", "back"];
 	if (canExposeResource(item)) return ["toggle", "expose", "pin", "back"];
 	if (isContainedResource(item)) return ["toggle", "pin", "back"];
-	if (isThemeItem(item)) return ["toggle", "pin", "remove", "back"];
+	if (isThemeItem(item)) return canRemoveResourceIndividually(item) ? ["toggle", "pin", "remove", "back"] : ["toggle", "pin", "back"];
 	return ["toggle", "pin", "remove", "back"];
 }
 
@@ -31,11 +35,20 @@ export function getDetailActionHint(
 	args: { isPinned: boolean; confirmingRemove: boolean },
 ): string | undefined {
 	switch (action) {
+		case "mcp-manager":
+			return theme.fg("dim", "Use Pi native /mcp for connection, authentication and server configuration");
+		case "mcp-tools":
+			return theme.fg("dim", "View this server's registered tools in Tools");
 		case "manage":
 			if (!canManagePackageContents(item)) return undefined;
 			return theme.fg("dim", "Browse resources in this package");
 		case "toggle":
 			if (isToolItem(item)) {
+				if (item.exposure === "codemode" || item.exposure === "deferred") {
+					return theme.fg("dim", item.enabled
+						? "Remove from active set; still callable through codemode/tool search"
+						: "Add to active set; already callable through codemode/tool search");
+				}
 				return theme.fg("dim", item.persistent
 					? `${item.enabled ? "Disable" : "Enable"} now and update Pi defaultTools`
 					: `${item.enabled ? "Disable" : "Enable"} for the current session`);
@@ -90,9 +103,16 @@ export function getDetailActionLabel(
 	args: { isPinned: boolean; selected: boolean },
 ): string {
 	switch (action) {
+		case "mcp-manager":
+			return theme.fg("accent", "Open Native /mcp");
+		case "mcp-tools":
+			return theme.fg("accent", "Browse Server Tools");
 		case "manage":
 			return theme.fg("accent", "Browse Package Contents");
 		case "toggle":
+			if (isToolItem(item) && (item.exposure === "codemode" || item.exposure === "deferred")) {
+				return item.enabled ? theme.fg("warning", "Deactivate") : theme.fg("success", "Activate");
+			}
 			if (isPackageItem(item)) {
 				return item.enabled ? theme.fg("warning", "Disable All Contents") : theme.fg("success", "Enable All Contents");
 			}

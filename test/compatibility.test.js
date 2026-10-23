@@ -36,12 +36,17 @@ test('refuses project settings writes when project is not trusted', async () => 
 test('persists built-in tool defaults without replacing unrelated Pi settings', async () => {
   await mkdir(agentDir, { recursive: true });
   await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ theme: 'dark', defaultTools: ['read', 'bash'] }), 'utf8');
-  const { setDefaultTools } = await import('../src/settings/mutations.ts');
-  const settingsPath = await setDefaultTools(cwd, ['read', 'powershell', 'edit', 'write'], 'user', false);
+  const { setDefaultToolStates } = await import('../src/settings/mutations.ts');
+  const settingsPath = await setDefaultToolStates(cwd, [
+    { name: 'powershell', enabled: true },
+    { name: 'bash', enabled: false },
+  ], 'user', false);
   const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
   assert.equal(saved.theme, 'dark');
-  assert.deepEqual(saved.defaultTools, ['read', 'powershell', 'edit', 'write']);
-  await assert.rejects(setDefaultTools(cwd, ['read'], 'project', false), /Project is not trusted/);
+  assert.deepEqual(saved.defaultTools, ['read', 'bash', '+powershell', '-bash']);
+  const { SettingsManager } = await import('@earendil-works/pi-coding-agent');
+  assert.deepEqual(SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultTools(), ['read', 'powershell']);
+  await assert.rejects(setDefaultToolStates(cwd, [{ name: 'read', enabled: true }], 'project', false), /Project is not trusted/);
 });
 
 test('tool commands update the live set and persist built-in defaults', async () => {
@@ -73,6 +78,7 @@ test('tool commands update the live set and persist built-in defaults', async ()
     isProjectTrusted: () => false,
     ui: {
       theme: { name: 'dark' },
+      getAllThemes: () => [],
       notify: (message, type) => notices.push({ message, type }),
     },
   };
@@ -82,7 +88,7 @@ test('tool commands update the live set and persist built-in defaults', async ()
   await handleMutateCommand('disable', 'tool remote_search', ctx, async () => {}, runtime);
   assert.deepEqual(activeTools, ['read', 'powershell']);
   const saved = JSON.parse(await readFile(join(agentDir, 'settings.json'), 'utf8'));
-  assert.deepEqual(saved.defaultTools, ['read', 'powershell']);
+  assert.deepEqual(saved.defaultTools, ['read', 'bash', '+powershell', '-bash']);
   assert(notices.some(({ message }) => message.includes('Enabled tool powershell')));
   assert(notices.some(({ message }) => message.includes('Disabled tool bash')));
   assert(notices.some(({ message }) => message.includes('Disabled tool remote_search · current session')));

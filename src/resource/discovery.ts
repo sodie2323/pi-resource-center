@@ -3,11 +3,14 @@
  */
 import { readFile, readdir, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import { stripBom } from "../json.js";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import {
 	DefaultPackageManager,
 	SettingsManager,
+	getPackageDir,
 	parseFrontmatter,
+	type ExtensionUIContext,
 	type PathMetadata,
 	type ResolvedPaths,
 	type ResolvedResource,
@@ -31,7 +34,9 @@ import {
 } from "../settings.js";
 import { getPackageKey, getPackageResourceId } from "./identity.js";
 import { getCodexPluginInventory } from "./codex-plugin-inventory.js";
+import { BUILTIN_EXTENSIONS, getBuiltinExtensionDescription, isBuiltinExtensionPath } from "./builtins.js";
 import { buildToolResourceItems, type ToolRuntime } from "./tool-runtime.js";
+import { discoverMcpServers } from "./mcp.js";
 import type {
 	FileResourceItem,
 	PackageEnabledSummary,
@@ -77,10 +82,13 @@ type ExternalSkillIdentity = {
 	relativeSkillPath: string;
 };
 
+export type ThemeRuntime = Pick<ExtensionUIContext, "getAllThemes">;
+
 export interface DiscoverResourcesOptions {
 	projectTrusted?: boolean;
 	syncExternalSkills?: boolean;
 	toolRuntime?: ToolRuntime;
+	themeRuntime?: ThemeRuntime;
 }
 
 export async function discoverResources(cwd: string, currentTheme?: string, options: DiscoverResourcesOptions = {}): Promise<ResourceIndex> {
@@ -93,7 +101,7 @@ export async function discoverResources(cwd: string, currentTheme?: string, opti
 		await syncExternalSkillSourcesToPiSettings(resourceCenterSettings.externalSkillSources, resourceCenterSettings.externalSkillSources, resourceCenterSettings.disabledExternalSkills);
 	}
 	const settingsManager = SettingsManager.create(cwd, USER_AGENT_DIR, { projectTrusted: options.projectTrusted ?? true });
-	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager });
+	const packageManager = new DefaultPackageManager({ cwd, agentDir: USER_AGENT_DIR, settingsManager, builtinExtensions: Object.keys(BUILTIN_EXTENSIONS) });
 	const resolvedPaths = await packageManager.resolve();
 	const projectSettings = settingsManager.getProjectSettings();
 	const userSettings = settingsManager.getGlobalSettings();
@@ -102,8 +110,9 @@ export async function discoverResources(cwd: string, currentTheme?: string, opti
 		{ path: "", dir: "", settings: userSettings },
 		currentTheme,
 	);
+	const themes = await buildThemeItems(resolvedPaths.themes, selectedTheme, caches, options.themeRuntime);
 	const packageCounts = buildPackageCountMap(resolvedPaths);
-	const packageEnabledCounts = await buildPackageEnabledSummaryMap(resolvedPaths, selectedTheme, caches);
+	const packageEnabledCounts = buildPackageEnabledSummaryMap(resolvedPaths, themes);
 	const packageDescriptions = await buildPackageDescriptionMap(resolvedPaths, caches);
 	const packageInstallPaths = buildPackageInstallPathMap(resolvedPaths);
 	const packageVersions = await buildPackageVersionMap(packageInstallPaths, caches);
@@ -137,19 +146,22 @@ export async function discoverResources(cwd: string, currentTheme?: string, opti
 	const resolvedSkillItems = await mapResolvedResources("skills", resolvedPaths.skills, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills);
 	const externalSkillItems = await discoverExternalSkillResources(resourceCenterSettings.externalSkillSources, userSettingsFile, caches, resolvedSkillItems, disabledExternalSkills);
 
+	const allTools = options.toolRuntime?.getAllTools() ?? [];
+	const activeTools = options.toolRuntime?.getActiveTools() ?? [];
 	const categories: ResourceIndex["categories"] = {
 		packages: sortItems([...projectPackages, ...userPackages]),
 		skills: sortItems([...resolvedSkillItems, ...externalSkillItems]),
 		extensions: await mapResolvedResources("extensions", resolvedPaths.extensions, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills),
 		prompts: await mapResolvedResources("prompts", resolvedPaths.prompts, exposedResources, caches, resourceCenterSettings.externalSkillSources, externalPluginOwners, disabledExternalSkills),
-		themes: await buildThemeItems(resolvedPaths.themes, selectedTheme, caches),
+		themes,
 		tools: options.toolRuntime
 			? sortItems(buildToolResourceItems(
-				options.toolRuntime.getAllTools(),
-				options.toolRuntime.getActiveTools(),
+				allTools,
+				activeTools,
 				options.projectTrusted !== false && projectSettings.defaultTools !== undefined ? "project" : "user",
 			))
 			: [],
+		mcp: await discoverMcpServers(cwd, options.projectTrusted !== false, options.toolRuntime, allTools, activeTools),
 	};
 
 	const index = { categories };
@@ -197,10 +209,10 @@ async function buildPackageItems(
 	return sortItems(items);
 }
 
-async function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes" | "tools">>(
+async function mapResolvedResources<TCategory extends Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">>(
 	category: TCategory,
 	resources: ResolvedResource[],
-	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes" | "tools">; package: string; path: string }>,
+	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">; package: string; path: string }>,
 	caches: DiscoveryCaches,
 	configuredSources: ExternalSkillSourceSetting[],
 	externalPluginOwners: ExternalPluginOwner[],
@@ -214,34 +226,64 @@ async function mapResolvedResources<TCategory extends Exclude<ResourceCategory, 
 	return sortItems(items);
 }
 
-async function buildThemeItems(resources: ResolvedResource[], selectedTheme: string | undefined, caches: DiscoveryCaches): Promise<ThemeResourceItem[]> {
-	const items = await Promise.all(
+async function buildThemeItems(
+	resources: ResolvedResource[],
+	selectedTheme: string | undefined,
+	caches: DiscoveryCaches,
+	runtime?: ThemeRuntime,
+): Promise<ThemeResourceItem[]> {
+	const available = new Map((runtime?.getAllThemes() ?? []).map((theme) => [theme.name, theme]));
+	const byPath = new Map([...available.values()].flatMap((theme) => theme.path ? [[themePathKey(theme.path), theme] as const] : []));
+	const packageRoot = `${themePathKey(getPackageDir()).replace(/\/$/, "")}/`;
+	// Pi reports file paths even for shipped themes. Generated themes have no file.
+	const isBuiltin = (path: string | undefined) => !path || themePathKey(path).startsWith(packageRoot);
+	const builtinNames = new Set([...available.values()].filter((theme) => isBuiltin(theme.path)).map((theme) => theme.name));
+	const discovered = await Promise.all(
 		resources
 			.filter((resource) => isSupportedScope(resource.metadata.scope))
 			.map((resource) => createThemeItem(resource, selectedTheme, caches)),
 	);
-
-	for (const name of ["dark", "light"] as const) {
+	const items: ThemeResourceItem[] = [];
+	const seenPaths = new Set<string>();
+	for (const item of discovered) {
+		const key = themePathKey(item.path!);
+		// Retain package/scope/identity metadata, but prefer the name actually loaded by Pi.
+		item.name = byPath.get(key)?.name ?? item.name;
+		if (builtinNames.has(item.name)) continue;
+		const loaded = available.get(item.name);
+		item.enabled = item.name === selectedTheme && (!loaded || (loaded.path !== undefined && themePathKey(loaded.path) === key));
+		seenPaths.add(key);
+		items.push(item);
+	}
+	for (const { name, path } of available.values()) {
+		const builtin = isBuiltin(path);
+		if (!builtin && seenPaths.has(themePathKey(path!))) continue;
 		items.push({
 			category: "themes",
-			id: `themes:user:builtin:${name}`,
+			id: builtin ? `themes:user:builtin:${name}` : `themes:user:runtime:${themePathKey(path!)}`,
 			name,
 			scope: "user",
-			source: "builtin",
-			description: `Built-in Pi theme: ${name}`,
+			source: builtin ? "builtin" : "runtime",
+			description: builtin ? `Built-in Pi theme: ${name}` : `Theme loaded by Pi: ${name}`,
 			enabled: name === selectedTheme,
-			builtin: true,
-			updatedAt: 0,
+			builtin,
+			// Shipped files are not user resources and must never be removed or mutated.
+			...(builtin ? {} : { path }),
+			updatedAt: builtin ? 0 : await safeMtimeMs(path, caches),
 		});
 	}
-
 	return sortItems(items);
 }
 
+function themePathKey(path: string): string {
+	const normalized = resolve(path).replace(/\\/g, "/");
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 async function createFileItem(
-	category: Exclude<ResourceCategory, "packages" | "themes" | "tools">,
+	category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">,
 	resource: ResolvedResource,
-	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes" | "tools">; package: string; path: string }>,
+	exposedResources: Array<{ scope: ResourceScope; category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">; package: string; path: string }>,
 	caches: DiscoveryCaches,
 	configuredSources: ExternalSkillSourceSetting[],
 	externalPluginOwners: ExternalPluginOwner[],
@@ -252,6 +294,7 @@ async function createFileItem(
 		throw new Error(`Unsupported resource scope: ${scope}`);
 	}
 
+	const builtinExtension = category === "extensions" && isBuiltinExtensionPath(resource.path);
 	const packageSource = resource.metadata.origin === "package" ? resource.metadata.source : undefined;
 	const packageRelativePath = getRelativeResourcePath(resource);
 	const promptMetadata = category === "prompts" ? await readPromptMetadata(resource.path, caches) : undefined;
@@ -263,7 +306,7 @@ async function createFileItem(
 	return {
 		category,
 		id: `${category}:${scope}:${resource.metadata.origin}:${resource.metadata.source}:${resource.path}`,
-		name: inferName(category, resource.path),
+		name: builtinExtension ? resource.path : inferName(category, resource.path),
 		scope,
 		path: resource.path,
 		source: normalizeSource(resource.metadata),
@@ -272,10 +315,10 @@ async function createFileItem(
 			? await readSkillDescription(resource.path, caches) ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
 			: category === "prompts"
 				? promptMetadata?.description ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
-				: buildResourceDescription(category, scope, resource.metadata, resource.path),
+				: builtinExtension ? getBuiltinExtensionDescription(resource.path) : buildResourceDescription(category, scope, resource.metadata, resource.path),
 		argumentHint: category === "prompts" ? promptMetadata?.argumentHint : undefined,
 		enabled: externalSkillIdentity ? !disabledExternalSkills.has(externalSkillIdentity.externalSkillId) : resource.enabled,
-		updatedAt: await safeMtimeMs(resource.path, caches),
+		updatedAt: builtinExtension ? 0 : await safeMtimeMs(resource.path, caches),
 		managedByPluginSettings: Boolean(pluginOwner),
 		externalSourceId: pluginOwner?.externalSourceId,
 		externalPluginId: externalSkillIdentity?.externalPluginId,
@@ -513,11 +556,11 @@ function buildPackageCountMap(resolvedPaths: ResolvedPaths): Map<string, Package
 	return counts;
 }
 
-async function buildPackageEnabledSummaryMap(
+function buildPackageEnabledSummaryMap(
 	resolvedPaths: ResolvedPaths,
-	selectedTheme: string | undefined,
-	caches: DiscoveryCaches,
-): Promise<Map<string, PackageEnabledSummary>> {
+	themes: ThemeResourceItem[],
+): Map<string, PackageEnabledSummary> {
+	const enabledThemePaths = new Set(themes.flatMap((item) => item.enabled && item.path ? [themePathKey(item.path)] : []));
 	const summaries = new Map<string, PackageEnabledSummary>();
 	for (const category of PACKAGE_RESOURCE_CATEGORIES) {
 		for (const resource of resolvedPaths[category]) {
@@ -526,7 +569,7 @@ async function buildPackageEnabledSummaryMap(
 			const current = summaries.get(key) ?? { enabledCount: 0, totalCount: 0 };
 			current.totalCount += 1;
 			const isEnabled = category === "themes"
-				? ((await readThemeName(resource.path, caches)) ?? basename(resource.path, extname(resource.path))) === selectedTheme
+				? enabledThemePaths.has(themePathKey(resource.path))
 				: resource.enabled;
 			if (isEnabled) {
 				current.enabledCount += 1;
@@ -586,7 +629,7 @@ async function readPackageDescription(packageJsonPath: string, caches: Discovery
 	if (caches.packageDescriptionByPath.has(cacheKey)) return caches.packageDescriptionByPath.get(cacheKey);
 	let description: string | undefined;
 	try {
-		const parsed = JSON.parse(await readFile(packageJsonPath, "utf8")) as { description?: unknown };
+		const parsed = JSON.parse(stripBom(await readFile(packageJsonPath, "utf8"))) as { description?: unknown };
 		description = typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : undefined;
 	} catch {
 		// Missing or invalid package metadata is represented as an empty cache value.
@@ -600,7 +643,7 @@ async function readPackageVersion(packageJsonPath: string, caches: DiscoveryCach
 	if (caches.packageVersionByPath.has(cacheKey)) return caches.packageVersionByPath.get(cacheKey);
 	let version: string | undefined;
 	try {
-		const parsed = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: unknown };
+		const parsed = JSON.parse(stripBom(await readFile(packageJsonPath, "utf8"))) as { version?: unknown };
 		version = typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : undefined;
 	} catch {
 		// Missing or invalid package metadata is represented as an empty cache value.
@@ -637,6 +680,7 @@ function formatExternalSourceLabel(source: ExternalSkillSourceSetting): string {
 }
 
 function normalizeSource(metadata: PathMetadata): string {
+	if (metadata.source === "builtin") return "builtin";
 	if (metadata.origin === "package") return metadata.source;
 	return metadata.source === "auto" ? "convention" : "manual";
 }
@@ -645,7 +689,7 @@ function isSupportedScope(scope: PathMetadata["scope"]): scope is ResourceScope 
 	return scope === "project" || scope === "user";
 }
 
-function inferName(category: Exclude<ResourceCategory, "packages" | "themes" | "tools">, path: string): string {
+function inferName(category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">, path: string): string {
 	if (category === "skills" && basename(path) === "SKILL.md") {
 		return basename(dirname(path));
 	}
@@ -664,7 +708,7 @@ async function readThemeName(path: string, caches: DiscoveryCaches): Promise<str
 	if (caches.themeNameByPath.has(cacheKey)) return caches.themeNameByPath.get(cacheKey);
 	let name: string | undefined;
 	try {
-		const parsed = JSON.parse(await readFile(path, "utf8")) as { name?: unknown };
+		const parsed = JSON.parse(stripBom(await readFile(path, "utf8"))) as { name?: unknown };
 		if (typeof parsed.name === "string" && parsed.name.trim()) name = parsed.name.trim();
 	} catch {
 		// Pi will surface invalid theme diagnostics during its own resource loading.
@@ -707,7 +751,7 @@ async function readPromptMetadata(path: string, caches: DiscoveryCaches): Promis
 }
 
 function buildResourceDescription(
-	category: Exclude<ResourceCategory, "packages" | "tools">,
+	category: Exclude<ResourceCategory, "packages" | "tools" | "mcp">,
 	scope: ResourceScope,
 	metadata: PathMetadata,
 	path: string,

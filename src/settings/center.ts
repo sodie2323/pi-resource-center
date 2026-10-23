@@ -4,6 +4,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { stripBom } from "../json.js";
 import { canExposeResource } from "../resource/capabilities.js";
 import { getCodexPluginInventory } from "../resource/codex-plugin-inventory.js";
 import { pruneExposedResourceEntries, prunePinnedResourceIds } from "../resource/state-prune.js";
@@ -29,7 +30,7 @@ async function readResourceCenterSettingsFile(): Promise<ResourceCenterSettingsF
 	const path = getResourceCenterSettingsPath();
 	try {
 		const raw = await readFile(path, "utf8");
-		const parsed = JSON.parse(raw) as Partial<ResourceCenterSettingsFile>;
+		const parsed = JSON.parse(stripBom(raw)) as Partial<ResourceCenterSettingsFile>;
 		return {
 			...DEFAULT_RESOURCE_CENTER_SETTINGS,
 			...parsed,

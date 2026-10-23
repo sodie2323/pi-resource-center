@@ -3,11 +3,11 @@
  */
 import { lstat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { FileResourceItem, ResourceCategory, ResourceItem } from "../types.js";
 import type { AddPathCategory } from "../resource/add-detect.js";
 import { getConfigEntryPrefix, getConfigEntryTarget, setExactOverride } from "../resource/config-overrides.js";
-import { isResourceCenterPackage } from "../resource/capabilities.js";
+import { isBuiltinExtension, isResourceCenterPackage } from "../resource/capabilities.js";
 import {
 	USER_AGENT_DIR,
 	getProjectSettingsPath,
@@ -28,6 +28,7 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem, 
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
+		if (item.category === "mcp") throw new Error("MCP servers are managed with native /mcp");
 		if (item.category === "tools") throw new Error("Tools are managed through Pi's active-tool API");
 		if (item.category === "packages") {
 			if (!item.enabled && isResourceCenterPackage(item)) {
@@ -48,7 +49,9 @@ export async function toggleResourceInSettings(cwd: string, item: ResourceItem, 
 }
 
 export async function removeResourceFromSettings(cwd: string, item: ResourceItem, projectTrusted = true): Promise<string> {
+	if (item.category === "mcp") throw new Error("MCP servers are managed with native /mcp");
 	if (item.category === "tools") throw new Error("Tools cannot be removed from Pi settings");
+	if (isBuiltinExtension(item)) throw new Error("Built-in extensions cannot be removed; disable them instead");
 	const settingsPath = item.scope === "project" ? getProjectSettingsPath(cwd) : getUserSettingsPath();
 	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
@@ -76,6 +79,7 @@ export async function removeResourceFromSettings(cwd: string, item: ResourceItem
 }
 
 export async function removeConventionResource(item: ResourceItem): Promise<string> {
+	if (isBuiltinExtension(item)) throw new Error("Built-in extensions have no file to delete");
 	if (item.category === "packages") throw new Error("Packages are not file resources and can't be removed from disk this way");
 	if (item.packageSource) throw new Error("Package resources can't be removed individually from disk");
 	if (!("path" in item) || !item.path) throw new Error(`Resource ${item.name} has no file path`);
@@ -111,9 +115,9 @@ export async function setActiveTheme(cwd: string, themeName: string, scope: "pro
 	}
 }
 
-export async function setDefaultTools(
+export async function setDefaultToolStates(
 	cwd: string,
-	toolNames: string[],
+	changes: Array<{ name: string; enabled: boolean }>,
 	scope: "project" | "user",
 	projectTrusted = true,
 ): Promise<string> {
@@ -121,10 +125,27 @@ export async function setDefaultTools(
 	const settingsManager = createSettingsManager(cwd, projectTrusted);
 	try {
 		if (scope === "project" && !settingsManager.isProjectTrusted()) throw new Error("Project is not trusted");
-		const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
-		settingsFile.settings.defaultTools = [...new Set(toolNames)];
-		await saveSettingsFile(settingsPath, settingsFile.settings);
-		return settingsPath;
+		if (changes.length === 0) return settingsPath;
+		const states = new Map(changes.map(({ name, enabled }) => [name, enabled]));
+		return await withFileMutationQueue(settingsPath, async () => {
+			const settingsFile = (await readSettingsFile(settingsPath)) ?? { path: settingsPath, dir: dirname(settingsPath), settings: {} };
+			const current = settingsFile.settings.defaultTools;
+			if (current?.length === 0) {
+				// [] is an explicit empty allowlist. Modifiers alone would restore Pi's defaults.
+				settingsFile.settings.defaultTools = [...states].filter(([, enabled]) => enabled).map(([name]) => name);
+			} else {
+				let entries = [...(current ?? [])];
+				for (const [name, enabled] of states) {
+					// Keep plain names so an existing allowlist stays an allowlist even when
+					// its last tool is disabled. Preserve every unrelated name and modifier.
+					entries = entries.filter((entry) => entry !== `+${name}` && entry !== `-${name}`);
+					entries.push(`${enabled ? "+" : "-"}${name}`);
+				}
+				settingsFile.settings.defaultTools = entries;
+			}
+			await saveSettingsFile(settingsPath, settingsFile.settings);
+			return settingsPath;
+		});
 	} catch (error: unknown) {
 		throw new Error(`Failed to save defaultTools in ${scope} scope via ${settingsPath}: ${toErrorMessage(error)}`);
 	}
@@ -164,9 +185,13 @@ function togglePackage(settingsManager: SettingsManager, scope: "project" | "use
 	setPackagesForScope(settingsManager, scope, packages);
 }
 
-function togglePathResource(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "themes" | "tools">, item: FileResourceItem, settingsDir: string): void {
+function togglePathResource(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">, item: FileResourceItem, settingsDir: string): void {
 	const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
 	const current = [...(settings[category] ?? [])];
+	if (isBuiltinExtension(item)) {
+		setPathEntriesForScope(settingsManager, scope, category, setExactOverride(current, item.path, item.enabled));
+		return;
+	}
 	const relativePath = toSettingsPath(item.path, settingsDir);
 	const normalizeEntryPath = (value: string) => normalizeFsPath(resolveConfigEntryPath(settingsDir, value));
 	const updated = setExactOverride(current, relativePath, item.enabled, {
@@ -181,7 +206,7 @@ function togglePathResource(settingsManager: SettingsManager, scope: "project" |
 	setPathEntriesForScope(settingsManager, scope, category, updated);
 }
 
-function togglePackageResource(settingsManager: SettingsManager, item: Exclude<ResourceItem, { category: "packages" | "tools" }>, enabled: boolean): void {
+function togglePackageResource(settingsManager: SettingsManager, item: Exclude<ResourceItem, { category: "packages" | "tools" | "mcp" }>, enabled: boolean): void {
 	if (!item.packageSource) throw new Error(`Resource ${item.name} is not backed by a package`);
 	const settings = item.scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
 	const packages = [...(settings.packages ?? [])] as PackageSource[];
@@ -221,7 +246,7 @@ function setPackagesForScope(settingsManager: SettingsManager, scope: "project" 
 	if (scope === "project") settingsManager.setProjectPackages(packages); else settingsManager.setPackages(packages);
 }
 
-function setPathEntriesForScope(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "tools">, paths: string[]): void {
+function setPathEntriesForScope(settingsManager: SettingsManager, scope: "project" | "user", category: Exclude<ResourceCategory, "packages" | "tools" | "mcp">, paths: string[]): void {
 	if (scope === "project") {
 		if (category === "extensions") settingsManager.setProjectExtensionPaths(paths);
 		else if (category === "skills") settingsManager.setProjectSkillPaths(paths);

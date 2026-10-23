@@ -1,16 +1,19 @@
 /**
  * 统一资源操作相关的用户提示文案。
  */
-import { canRemoveResourceIndividually, isContainedResource, isPackageItem, isThemeItem, isToolItem } from "./capabilities.js";
+import { canRemoveResourceIndividually, isContainedResource, isBuiltinExtension, isPackageItem, isThemeItem, isToolItem, isMcpItem } from "./capabilities.js";
 import type { ResourceItem } from "../types.js";
 
 export function getRemoveBlockedMessage(item: ResourceItem): string | undefined {
 	if (canRemoveResourceIndividually(item)) return undefined;
+	if (isMcpItem(item)) return "MCP servers are managed with native /mcp; they are not Pi path resources.";
+	if (isBuiltinExtension(item)) return `Built-in extension "${item.name}" can't be removed. Disable it instead.`;
 	if (isToolItem(item)) return "Tools are registered by Pi or extensions and can't be removed individually. Disable the tool or its providing extension instead.";
 	if (isContainedResource(item)) return "This resource comes from a package and can't be removed individually. Disable it instead.";
 	if ("managedByPluginSettings" in item && item.managedByPluginSettings) {
 		return "This resource comes from an external skill source managed by plugin settings. Disable that source in Settings instead.";
 	}
+	if (isThemeItem(item) && item.source === "runtime") return `Theme "${item.name}" is loaded by Pi but is not managed in resource settings.`;
 	return `Built-in theme "${item.name}" can't be removed.`;
 }
 

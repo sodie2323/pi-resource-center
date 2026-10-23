@@ -3,6 +3,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { stripBom } from "../json.js";
 import { basename, dirname, relative, resolve } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ResourceCategory, ResourceItem, ResourceScope } from "../types.js";
@@ -44,7 +45,7 @@ export interface SettingsFile {
 
 export interface ExposedResourceEntry {
 	scope: ResourceScope;
-	category: Exclude<ResourceCategory, "packages" | "themes" | "tools">;
+	category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">;
 	package: string;
 	path: string;
 }
@@ -94,7 +95,7 @@ export const RESOURCE_CENTER_SETTINGS_FILE = "pi-resource-center-settings.json";
 export async function readSettingsFile(path: string): Promise<SettingsFile | undefined> {
 	try {
 		const raw = await readFile(path, "utf8");
-		const parsed = JSON.parse(raw) as SettingsShape;
+		const parsed = JSON.parse(stripBom(raw)) as SettingsShape;
 		return { path, dir: dirname(path), settings: parsed };
 	} catch (error: unknown) {
 		if (isFileNotFoundError(error)) return undefined;
@@ -120,14 +121,14 @@ export function getSettingPaths(settingsFile: SettingsFile | undefined, category
 }
 
 export function getSettingPathEntries(settingsFile: SettingsFile | undefined, category: ResourceCategory): Array<{ path: string; enabled: boolean }> {
-	if (!settingsFile || category === "packages" || category === "tools") return [];
+	if (!settingsFile || category === "packages" || category === "tools" || category === "mcp") return [];
 	const values = settingsFile.settings[category] ?? [];
 	return values
 		.filter((value): value is string => typeof value === "string")
 		.map((value) => ({ path: resolve(settingsFile.dir, normalizeConfigPath(value)), enabled: !isDisabledConfigPath(value) }));
 }
 
-export function getPathResourceEnabledState(settingsFile: SettingsFile | undefined, category: Exclude<ResourceCategory, "packages" | "tools">, path: string): boolean | undefined {
+export function getPathResourceEnabledState(settingsFile: SettingsFile | undefined, category: Exclude<ResourceCategory, "packages" | "tools" | "mcp">, path: string): boolean | undefined {
 	if (!settingsFile) return undefined;
 	const normalizedPath = resolve(settingsFile.dir, path);
 	let explicitState: boolean | undefined;
@@ -146,7 +147,7 @@ export function getPackageSources(settingsFile: SettingsFile | undefined): Packa
 
 export function getSelectedTheme(projectSettings: SettingsFile | undefined, userSettings: SettingsFile | undefined, currentTheme?: string): string | undefined {
 	// The live UI theme is authoritative for automatic light/dark pairs and --use-theme.
-	return currentTheme ?? projectSettings?.settings.theme ?? userSettings?.settings.theme;
+	return currentTheme ?? projectSettings?.settings.theme ?? userSettings?.settings.theme ?? "system";
 }
 
 export function isPackageSourceEnabled(source: PackageSource): boolean {

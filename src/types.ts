@@ -1,7 +1,8 @@
 /**
  * 资源中心使用的核心领域类型定义。
  */
-export type ResourceCategory = "packages" | "skills" | "extensions" | "prompts" | "themes" | "tools";
+import type { ToolExposure } from "@earendil-works/pi-coding-agent";
+export type ResourceCategory = "packages" | "skills" | "extensions" | "prompts" | "themes" | "tools" | "mcp";
 
 export type ResourceScope = "project" | "user";
 export type ToolResourceScope = ResourceScope | "session";
@@ -39,7 +40,7 @@ export interface PackageResourceItem {
 }
 
 export interface FileResourceItem {
-	category: Exclude<ResourceCategory, "packages" | "themes" | "tools">;
+	category: Exclude<ResourceCategory, "packages" | "themes" | "tools" | "mcp">;
 	id: string;
 	name: string;
 	scope: ResourceScope;
@@ -90,7 +91,9 @@ export interface ToolResourceItem {
 	enabled: boolean;
 	builtin: boolean;
 	persistent: boolean;
+	exposure: ToolExposure;
 	overridesBuiltin?: boolean;
+	toolNamespace?: string;
 	toolSourcePath: string;
 	toolSourceOrigin: "package" | "top-level";
 	packageSource?: string;
@@ -99,7 +102,30 @@ export interface ToolResourceItem {
 	updatedAt?: undefined;
 }
 
-export type ResourceItem = PackageResourceItem | FileResourceItem | ThemeResourceItem | ToolResourceItem;
+export interface McpServerResourceItem {
+	category: "mcp";
+	id: string;
+	name: string;
+	scope: ToolResourceScope;
+	source: string;
+	sourceLabel: string;
+	description: string;
+	enabled: boolean;
+	configState: "enabled" | "disabled" | "unknown" | "error";
+	exposure?: string;
+	transport?: "stdio" | "http";
+	namespace: string;
+	toolNames: string[];
+	activeToolCount: number;
+	/** Shared native resource tools, not a per-server resource inventory. */
+	resourceTools: string[];
+	packageSource?: undefined;
+	packageRelativePath?: undefined;
+	exposed?: false;
+	updatedAt?: undefined;
+}
+
+export type ResourceItem = PackageResourceItem | FileResourceItem | ThemeResourceItem | ToolResourceItem | McpServerResourceItem;
 
 export interface ResourceIndex {
 	categories: Record<ResourceCategory, ResourceItem[]>;

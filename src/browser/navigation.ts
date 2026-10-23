@@ -38,12 +38,14 @@ export function getDetailTitle(item: ResourceItem): string {
 }
 
 export function getListFooterText(selectedCategory: ResourceCategory): string {
+	if (selectedCategory === "mcp") return "Enter details · Space/M native /mcp · P pin/unpin · Esc close";
 	return selectedCategory === "tools"
 		? "Space toggle · Enter details · Esc close"
 		: "Space toggle · A add · P pin/unpin · Enter details · Esc close";
 }
 
 export function getDetailFooterText(item?: ResourceItem): string {
+	if (item?.category === "mcp") return "Enter confirm · P pin/unpin · Esc back";
 	return item?.category === "tools"
 		? "Enter confirm · Esc back"
 		: "Enter confirm · A add · P pin/unpin · Esc back";

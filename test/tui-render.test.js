@@ -40,6 +40,7 @@ const emptyResources = {
     prompts: [],
     themes: [],
     tools: [],
+    mcp: [],
   },
 };
 
@@ -163,6 +164,34 @@ test('detail pages omit redundant resource metadata fields', () => {
   }
   assert(rendered.includes('Description'));
   assert(rendered.includes('Actions'));
+});
+
+test('tool exposure badges are rendered and searchable without merging MCP servers into builtins', () => {
+  const tools = buildToolResourceItems([
+    { name: 'mcp__docs__search', description: 'Search docs', exposure: 'deferred', namespace: { name: 'mcp__docs' },
+      sourceInfo: { path: 'builtin:mcp', source: 'builtin', scope: 'user', origin: 'top-level' } },
+    { name: 'read', description: 'Read', exposure: 'direct',
+      sourceInfo: { path: 'builtin:read', source: 'builtin', scope: 'temporary', origin: 'top-level' } },
+  ], ['read'], 'user');
+  const browser = new ResourceBrowser(
+    passthroughTheme,
+    { ...emptyResources, categories: { ...emptyResources.categories, tools } },
+    'tools',
+    structuredClone(DEFAULT_RESOURCE_CENTER_SETTINGS),
+    { onClose() {} },
+    process.cwd(),
+    getKeybindings(),
+  );
+  const rendered = browser.render(120).join('\n');
+  assert(rendered.includes('[deferred]'));
+  assert(rendered.includes('mcp:docs'));
+  browser.handleInput('deferred');
+  const filtered = browser.render(120).join('\n');
+  assert(filtered.includes('mcp__docs__search'));
+  assert.equal(filtered.includes(' builtin'), false);
+  for (const width of [20, 40, 80, 120]) {
+    for (const line of browser.render(width)) assert(visibleWidth(line) <= width);
+  }
 });
 
 test('resource browser respects the custom TUI width contract', () => {
