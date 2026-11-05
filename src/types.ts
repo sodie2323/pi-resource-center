@@ -49,6 +49,9 @@ export interface FileResourceItem {
 	sourceLabel?: string;
 	description: string;
 	argumentHint?: string;
+	/** Bounded prompt body, without frontmatter; rendered only in prompt details. */
+	promptPreview?: string;
+	promptPreviewTruncated?: boolean;
 	enabled: boolean;
 	managedByPluginSettings?: boolean;
 	externalSourceId?: string;
@@ -80,6 +83,14 @@ export interface ThemeResourceItem {
 	exposed?: boolean;
 }
 
+export interface ToolParameterSummary {
+	name: string;
+	type: string;
+	required: boolean;
+	description?: string;
+	defaultValue?: string;
+}
+
 export interface ToolResourceItem {
 	category: "tools";
 	id: string;
@@ -96,6 +107,7 @@ export interface ToolResourceItem {
 	toolNamespace?: string;
 	toolSourcePath: string;
 	toolSourceOrigin: "package" | "top-level";
+	parameters?: ToolParameterSummary[];
 	packageSource?: string;
 	packageRelativePath?: undefined;
 	exposed?: false;
@@ -112,10 +124,13 @@ export interface McpServerResourceItem {
 	description: string;
 	enabled: boolean;
 	configState: "enabled" | "disabled" | "unknown" | "error";
+	toggleMode: "config" | "registration" | "none";
 	exposure?: string;
 	transport?: "stdio" | "http";
 	namespace: string;
 	toolNames: string[];
+	/** Waiting for the first live inventory check, not MCP connection status. */
+	toolsLoading?: boolean;
 	activeToolCount: number;
 	/** Shared native resource tools, not a per-server resource inventory. */
 	resourceTools: string[];
@@ -128,6 +143,8 @@ export interface McpServerResourceItem {
 export type ResourceItem = PackageResourceItem | FileResourceItem | ThemeResourceItem | ToolResourceItem | McpServerResourceItem;
 
 export interface ResourceIndex {
+	/** Native defaultTools persistence scope from trusted project/user settings. */
+	builtinToolScope?: ResourceScope;
 	categories: Record<ResourceCategory, ResourceItem[]>;
 }
 

@@ -18,7 +18,10 @@ import {
 import type { ResourceItem } from "../types.js";
 
 export function getDetailActions(item: ResourceItem): DetailAction[] {
-	if (isMcpItem(item)) return item.configState === "error" ? ["mcp-manager", "back"] : ["mcp-manager", "mcp-tools", "pin", "back"];
+	if (isMcpItem(item)) {
+		if (item.configState === "error") return ["mcp-manager", "back"];
+		return item.toggleMode === "none" ? ["mcp-manager", "mcp-tools", "pin", "back"] : ["toggle", "mcp-manager", "mcp-tools", "pin", "back"];
+	}
 	if (isToolItem(item)) return ["toggle", "back"];
 	if (isBuiltinExtension(item)) return ["toggle", "pin", "back"];
 	if (isPackageItem(item)) return ["manage", "toggle", "pin", "update", "remove", "back"];
@@ -36,13 +39,18 @@ export function getDetailActionHint(
 ): string | undefined {
 	switch (action) {
 		case "mcp-manager":
-			return theme.fg("dim", "Use Pi native /mcp for connection, authentication and server configuration");
+			return theme.fg("dim", "Open /mcp for connection, authentication and exposure");
 		case "mcp-tools":
-			return theme.fg("dim", "View this server's registered tools in Tools");
+			return theme.fg("dim", "View registered tools from this server");
 		case "manage":
 			if (!canManagePackageContents(item)) return undefined;
 			return theme.fg("dim", "Browse resources in this package");
 		case "toggle":
+			if (isMcpItem(item)) {
+				return theme.fg("dim", item.toggleMode === "config"
+					? "Save configuration · /reload to apply"
+					: "Apply for this session · requires registration ownership");
+			}
 			if (isToolItem(item)) {
 				if (item.exposure === "codemode" || item.exposure === "deferred") {
 					return theme.fg("dim", item.enabled
@@ -104,9 +112,9 @@ export function getDetailActionLabel(
 ): string {
 	switch (action) {
 		case "mcp-manager":
-			return theme.fg("accent", "Open Native /mcp");
+			return theme.fg("accent", "Open MCP Manager");
 		case "mcp-tools":
-			return theme.fg("accent", "Browse Server Tools");
+			return theme.fg("accent", "Browse Tools");
 		case "manage":
 			return theme.fg("accent", "Browse Package Contents");
 		case "toggle":

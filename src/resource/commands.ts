@@ -3,6 +3,7 @@
  */
 import { DefaultPackageManager, SettingsManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { discoverResources } from "./discovery.js";
+import { setMcpServerEnabled } from "./mcp-mutations.js";
 import { canExposeResource, canRemoveResourceIndividually, isContainedResource, isResourceCenterPackage, isThemeItem, isToolItem, isMcpItem } from "./capabilities.js";
 import { getResourceSearchCandidates } from "./identity.js";
 import {
@@ -103,7 +104,18 @@ export async function handleMutateCommand(
 
 	const item = matches[0]!;
 	if (isMcpItem(item)) {
-		ctx.ui.notify("Manage MCP server configuration, connections and exposure with native /mcp", "warning");
+		if (action === "remove") {
+			ctx.ui.notify("Remove MCP servers with pi mcp remove; use /resource enable/disable mcp <name> to toggle.", "warning");
+			return;
+		}
+		try {
+			const result = await setMcpServerEnabled(ctx.cwd, item, action === "enable", ctx.isProjectTrusted(), toolRuntime);
+			await refreshCompletions();
+			if (result.requiresReload) await reloadAfterSettingsChange(ctx, result.message);
+			else ctx.ui.notify(result.message, "info");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : "Failed to update MCP enabled state", "warning");
+		}
 		return;
 	}
 	if (action === "remove") {

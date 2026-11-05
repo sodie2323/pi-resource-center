@@ -51,12 +51,15 @@ import { isRemotePackageSource } from "../types.js";
 
 const PACKAGE_RESOURCE_CATEGORIES = ["extensions", "skills", "prompts", "themes"] as const;
 
+type PromptMetadata = { description?: string; argumentHint?: string; preview?: string; previewTruncated?: boolean };
+const PROMPT_PREVIEW_MAX_CHARS = 8192;
+
 type DiscoveryCaches = {
 	mtimeByPath: Map<string, number | undefined>;
 	packageDescriptionByPath: Map<string, string | undefined>;
 	packageVersionByPath: Map<string, string | undefined>;
 	skillDescriptionByPath: Map<string, string | undefined>;
-	promptMetadataByPath: Map<string, { description?: string; argumentHint?: string }>;
+	promptMetadataByPath: Map<string, PromptMetadata>;
 	themeNameByPath: Map<string, string | undefined>;
 };
 
@@ -64,7 +67,7 @@ const sessionMetadataCaches = {
 	packageDescriptionByPath: new Map<string, string | undefined>(),
 	packageVersionByPath: new Map<string, string | undefined>(),
 	skillDescriptionByPath: new Map<string, string | undefined>(),
-	promptMetadataByPath: new Map<string, { description?: string; argumentHint?: string }>(),
+	promptMetadataByPath: new Map<string, PromptMetadata>(),
 	themeNameByPath: new Map<string, string | undefined>(),
 };
 
@@ -148,6 +151,7 @@ export async function discoverResources(cwd: string, currentTheme?: string, opti
 
 	const allTools = options.toolRuntime?.getAllTools() ?? [];
 	const activeTools = options.toolRuntime?.getActiveTools() ?? [];
+	const builtinToolScope = options.projectTrusted !== false && projectSettings.defaultTools !== undefined ? "project" : "user";
 	const categories: ResourceIndex["categories"] = {
 		packages: sortItems([...projectPackages, ...userPackages]),
 		skills: sortItems([...resolvedSkillItems, ...externalSkillItems]),
@@ -158,13 +162,13 @@ export async function discoverResources(cwd: string, currentTheme?: string, opti
 			? sortItems(buildToolResourceItems(
 				allTools,
 				activeTools,
-				options.projectTrusted !== false && projectSettings.defaultTools !== undefined ? "project" : "user",
+				builtinToolScope,
 			))
 			: [],
 		mcp: await discoverMcpServers(cwd, options.projectTrusted !== false, options.toolRuntime, allTools, activeTools),
 	};
 
-	const index = { categories };
+	const index: ResourceIndex = { categories, builtinToolScope };
 	await syncPrunedExposedResources(index);
 	return index;
 }
@@ -314,9 +318,11 @@ async function createFileItem(
 		description: category === "skills"
 			? await readSkillDescription(resource.path, caches) ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
 			: category === "prompts"
-				? promptMetadata?.description ?? buildResourceDescription(category, scope, resource.metadata, resource.path)
+				? promptMetadata?.description ?? (promptMetadata?.preview ? "" : buildResourceDescription(category, scope, resource.metadata, resource.path))
 				: builtinExtension ? getBuiltinExtensionDescription(resource.path) : buildResourceDescription(category, scope, resource.metadata, resource.path),
 		argumentHint: category === "prompts" ? promptMetadata?.argumentHint : undefined,
+		promptPreview: promptMetadata?.preview,
+		promptPreviewTruncated: promptMetadata?.previewTruncated,
 		enabled: externalSkillIdentity ? !disabledExternalSkills.has(externalSkillIdentity.externalSkillId) : resource.enabled,
 		updatedAt: builtinExtension ? 0 : await safeMtimeMs(resource.path, caches),
 		managedByPluginSettings: Boolean(pluginOwner),
@@ -731,13 +737,16 @@ async function readSkillDescription(path: string, caches: DiscoveryCaches): Prom
 	return description;
 }
 
-async function readPromptMetadata(path: string, caches: DiscoveryCaches): Promise<{ description?: string; argumentHint?: string } | undefined> {
+async function readPromptMetadata(path: string, caches: DiscoveryCaches): Promise<PromptMetadata | undefined> {
 	const cacheKey = await getMetadataCacheKey(path, caches);
 	if (caches.promptMetadataByPath.has(cacheKey)) return caches.promptMetadataByPath.get(cacheKey);
-	let metadata: { description?: string; argumentHint?: string } = {};
+	let metadata: PromptMetadata = {};
 	try {
-		const { frontmatter } = parseFrontmatter<{ description?: string; "argument-hint"?: string }>(await readFile(path, "utf8"));
+		const { frontmatter, body } = parseFrontmatter<{ description?: string; "argument-hint"?: string }>(stripBom(await readFile(path, "utf8")));
+		const content = body.replace(/\r\n?/g, "\n").replace(/^(?:[^\S\n]*\n)+/, "").replace(/(?:\n[^\S\n]*)+$/, "");
 		metadata = {
+			preview: content.slice(0, PROMPT_PREVIEW_MAX_CHARS),
+			previewTruncated: content.length > PROMPT_PREVIEW_MAX_CHARS,
 			description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description.trim() : undefined,
 			argumentHint: typeof frontmatter["argument-hint"] === "string" && frontmatter["argument-hint"].trim()
 				? frontmatter["argument-hint"].trim()

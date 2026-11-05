@@ -46,6 +46,7 @@ const MUTATION_CATEGORY_COMPLETIONS = [
 	{ value: "prompt", description: "Match a prompt by name, source, or path" },
 	{ value: "theme", description: "Match a theme by name, source, or path" },
 	{ value: "tool", description: "Match a registered tool by name or source" },
+	{ value: "mcp", description: "Match an MCP server to enable or disable" },
 ] as const;
 const EXPOSURE_CATEGORY_COMPLETIONS = [
 	{ value: "skill", description: "Match a package-contained skill by name, source, or path" },

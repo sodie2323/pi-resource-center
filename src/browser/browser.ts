@@ -1,7 +1,7 @@
 /**
  * 资源浏览器核心状态容器：负责协调 UI 状态、渲染适配、缓存与回调。
  */
-import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { getSettingsListTheme, type Theme, type ToolInfo } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_EXTERNAL_SKILL_SOURCES, USER_AGENT_DIR, type ResourceCenterSettings } from "../settings.js";
 import {
 	type Component,
@@ -33,13 +33,11 @@ import {
 	type BrowserMode,
 	type DetailAction,
 	type PackageContentCategory,
-	type PackageGroupEntry,
 	type SettingsSection,
 } from "./shared.js";
 import {
 	buildBrowserListEntries,
-	buildPackageGroupEntries,
-	getFilteredPackageContainedItems as filterPackageContainedItems,
+	sortResourceItems,
 	getPackageContainedItems as selectPackageContainedItems,
 	getVisibleCategoryItems as selectVisibleCategoryItems,
 } from "./selectors.js";
@@ -48,7 +46,6 @@ import {
 	renderFooterWithSettingsHint as renderFooterWithSettingsHintView,
 	renderHeader as renderHeaderView,
 	renderListPage as renderListPageView,
-	renderPackageGroupsPage as renderPackageGroupsPageView,
 	renderPackageItemsPage as renderPackageItemsPageView,
 	renderSearch as renderSearchView,
 	renderSettingsSearch as renderSettingsSearchView,
@@ -58,6 +55,7 @@ import {
 	wrapBlock as wrapBlockView,
 } from "./render.js";
 import { getDetailActionHint, getDetailActionLabel, getDetailActions } from "./actions.js";
+import { TOOL_PARAMETER_WINDOW_SIZE } from "./detail-content.js";
 import {
 	applyAcceptedSuggestion,
 	createInitialAddModeState,
@@ -70,14 +68,15 @@ import {
 import {
 	handleDetailInput as handleDetailInputMode,
 	handleListInput,
-	handlePackageGroupsInput as handlePackageGroupsInputMode,
 	handlePackageItemsInput as handlePackageItemsInputMode,
 	handleSettingsInput as handleSettingsInputMode,
 } from "./input.js";
-import { getAddFooterText, getDetailFooterText, getEmptyPackageCategoryMessage, getHeaderTitle, getListFooterText, getPackageFooterText, moveSelection } from "./navigation.js";
+import { getAddFooterText, getDetailFooterText, getHeaderTitle, getListFooterText, getPackageFooterText, moveSelection } from "./navigation.js";
 import { isContainedResource, isPackageItem, isThemeItem, isMcpItem } from "../resource/capabilities.js";
 import { getPackageResourceId, isSameResource } from "../resource/identity.js";
 import { prunePinnedResourceIds } from "../resource/state-prune.js";
+import { buildToolResourceItems } from "../resource/tool-runtime.js";
+import { updateMcpToolInventory } from "../resource/mcp.js";
 import type { AddPathCategory } from "../resource/add-detect.js";
 import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
 
@@ -100,10 +99,14 @@ export class ResourceBrowser implements Component, Focusable {
 	private settingsReturnMode: Exclude<BrowserMode, "settings"> = "list";
 	private detailItem: ResourceItem | undefined;
 	private detailSelectedIndex = 0;
+	private detailScrollOffset = 0;
+	private detailParameterOffset = 0;
+	private detailDescriptionExpanded = false;
+	private detailDescriptionExpandable = false;
+	private detailContentLines = 0;
+	private detailVisibleLines = 0;
 	private detailReturnMode: Exclude<BrowserMode, "detail"> = "list";
 	private packageItem: ResourceItem | undefined;
-	private packageGroupSelectionIndex = 0;
-	private packageContentsCategory: PackageContentCategory = "extensions";
 	private packageContentsItems: ResourceItem[] = [];
 	private packageContentsSelectedIndex = 0;
 	private settingsSection: SettingsSection = "all";
@@ -118,15 +121,7 @@ export class ResourceBrowser implements Component, Focusable {
 	private visibleCategoryItemsCache = new Map<ResourceCategory, ResourceItem[]>();
 	private searchTextCache = new Map<string, { base: string; withDescription: string; withPath: string; withDescriptionAndPath: string }>();
 	private containedItemsCache = new Map<string, ResourceItem[]>();
-	private filteredPackageItemsCache = new Map<string, ResourceItem[]>();
 	private pinnedRank = new Map<string, number>();
-	private packageGroupEntriesCache:
-		| {
-				packageId: string;
-				query: string;
-				entries: PackageGroupEntry[];
-		  }
-		| undefined;
 	private confirmingRemove = false;
 	private actionMessage: { action: DetailAction; type: "info" | "warning" | "error"; text: string } | undefined;
 	private expandedGroupIds = new Set<string>();
@@ -180,8 +175,6 @@ export class ResourceBrowser implements Component, Focusable {
 	private invalidatePackageCaches(): void {
 		this.visibleCategoryItemsCache.clear();
 		this.containedItemsCache.clear();
-		this.filteredPackageItemsCache.clear();
-		this.packageGroupEntriesCache = undefined;
 	}
 
 	private invalidateVisibleCategoryCache(category: ResourceCategory): void {
@@ -191,20 +184,12 @@ export class ResourceBrowser implements Component, Focusable {
 	private invalidatePackageViewCaches(packageId?: string, category?: PackageContentCategory): void {
 		if (!packageId) {
 			this.containedItemsCache.clear();
-			this.filteredPackageItemsCache.clear();
-			this.packageGroupEntriesCache = undefined;
 			return;
 		}
-
-		const containedPrefix = category ? `${packageId}:${category}` : `${packageId}:`;
-		for (const key of [...this.containedItemsCache.keys()]) {
-			if (key.startsWith(containedPrefix)) this.containedItemsCache.delete(key);
+		const prefix = category ? `${packageId}:${category}` : `${packageId}:`;
+		for (const key of this.containedItemsCache.keys()) {
+			if (key.startsWith(prefix)) this.containedItemsCache.delete(key);
 		}
-		for (const key of [...this.filteredPackageItemsCache.keys()]) {
-			if (key.startsWith(containedPrefix)) this.filteredPackageItemsCache.delete(key);
-		}
-		if (!this.packageGroupEntriesCache || this.packageGroupEntriesCache.packageId !== packageId) return;
-		this.packageGroupEntriesCache = undefined;
 	}
 
 	private invalidateItemCaches(item: ResourceItem): void {
@@ -220,10 +205,6 @@ export class ResourceBrowser implements Component, Focusable {
 	handleInput(data: string): void {
 		if (this.mode === "detail") {
 			this.handleDetailInput(data);
-			return;
-		}
-		if (this.mode === "packageGroups") {
-			this.handlePackageGroupsInput(data);
 			return;
 		}
 		if (this.mode === "packageItems") {
@@ -259,14 +240,14 @@ export class ResourceBrowser implements Component, Focusable {
 		});
 	}
 
-	render(width: number): string[] {
+	render(width: number, terminalRows = process.stdout.rows ?? 32): string[] {
 		const innerWidth = Math.max(1, width - 2);
 		const lines: string[] = [];
 		lines.push(this.renderTopRule(width));
 		lines.push(...this.wrapBlock(this.renderHeader(innerWidth), width));
 		if (this.mode === "detail") {
 			lines.push("");
-			lines.push(...this.wrapBlock(this.renderDetailPage(innerWidth), width));
+			lines.push(...this.wrapBlock(this.renderDetailPage(innerWidth, terminalRows), width));
 			lines.push("");
 			lines.push(...this.wrapBlock([this.renderDetailFooter(innerWidth)], width));
 			lines.push(this.renderTopRule(width));
@@ -285,16 +266,6 @@ export class ResourceBrowser implements Component, Focusable {
 			lines.push(...this.wrapBlock(this.renderAddPage(innerWidth), width));
 			lines.push("");
 			lines.push(...this.wrapBlock([this.renderAddFooter(innerWidth)], width));
-			lines.push(this.renderTopRule(width));
-			return lines;
-		}
-		if (this.mode === "packageGroups") {
-			lines.push("");
-			lines.push(...this.wrapBlock(this.renderSearch(innerWidth), width));
-			lines.push("");
-			lines.push(...this.wrapBlock(this.renderPackageGroupsPage(innerWidth), width));
-			lines.push("");
-			lines.push(...this.wrapBlock([this.renderPackageFooter(innerWidth)], width));
 			lines.push(this.renderTopRule(width));
 			return lines;
 		}
@@ -320,17 +291,13 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private renderHeader(width: number): string[] {
-		const count =
-			this.mode === "settings"
-				? this.getFilteredSettingsItems(this.settingsSection).length
-				: this.mode === "add"
-					? 1
-					: this.mode === "packageItems"
-					? this.packageContentsItems.length
-					: this.mode === "packageGroups"
-						? this.getPackageGroupEntries().length
-						: this.filteredListEntries.length;
-		return renderHeaderView(this.theme, width, this.getHeaderTitle(), count);
+		const packageContext = this.mode === "packageItems" || (this.mode === "detail" && this.detailReturnMode === "packageItems");
+		const count = this.mode === "settings" ? this.getFilteredSettingsItems(this.settingsSection).length
+			: this.mode === "add" ? 1 : packageContext ? this.packageContentsItems.length : this.filteredListEntries.length;
+		const primary = this.mode === "detail" && this.detailItem
+			? isPackageItem(this.detailItem) ? formatResourceSourceLabel(this.detailItem) : this.detailItem.name
+			: this.mode === "packageItems" && this.packageItem ? `${formatResourceSourceLabel(this.packageItem)} / Contents` : undefined;
+		return renderHeaderView(this.theme, width, this.getHeaderTitle(), count, primary);
 	}
 
 	private renderTabs(width: number): string[] {
@@ -338,15 +305,8 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private renderSearch(width: number): string[] {
-		const mode = this.mode === "packageGroups" ? "packageGroups" : this.mode === "packageItems" ? "packageItems" : "list";
-		const label = mode === "packageGroups"
-			? "Search in package:"
-			: mode === "packageItems"
-				? `Search in ${CATEGORY_LABELS[this.packageContentsCategory].toLowerCase()}:`
-				: "Search:";
-		const inputWidth = Math.max(1, width - label.length - 1);
-		const inputLines = this.getActiveSearchInput().render(inputWidth);
-		return renderSearchView(this.theme, width, mode, this.packageContentsCategory, inputLines[0] ?? "");
+		const inputLines = this.getActiveSearchInput().render(Math.max(1, width - "Search: ".length));
+		return renderSearchView(this.theme, width, inputLines[0] ?? "");
 	}
 
 	private renderList(width: number): string[] {
@@ -362,8 +322,28 @@ export class ResourceBrowser implements Component, Focusable {
 		});
 	}
 
-	private renderDetailPage(width: number): string[] {
+	private renderDetailPage(width: number, terminalRows: number): string[] {
+		const scrollable = this.detailItem?.category === "tools" || this.detailItem?.category === "prompts" || this.detailDescriptionExpanded;
+		const actionCount = this.detailItem ? getDetailActions(this.detailItem).reduce((rows, action) => {
+			const label = getDetailActionLabel(this.theme, action, this.detailItem!, { isPinned: this.isPinned(this.detailItem!), selected: false });
+			return rows + wrapTextWithAnsi(label, Math.max(1, width - 2)).length;
+		}, 0) : 0;
+		const parameterCount = this.detailItem?.category === "tools" ? this.detailItem.parameters?.length ?? 0 : 0;
+		this.detailParameterOffset = Math.max(0, Math.min(this.detailParameterOffset, parameterCount - TOOL_PARAMETER_WINDOW_SIZE));
 		return renderDetailPageView({
+			contentOffset: this.detailScrollOffset,
+			parameterOffset: this.detailParameterOffset,
+			descriptionExpanded: this.detailDescriptionExpanded,
+			onDescriptionLayout: (expandable) => {
+				this.detailDescriptionExpandable = expandable;
+			},
+			// Reserve space for the frame, actions and surrounding Pi UI. Other resource pages stay unchanged.
+			maxContentLines: scrollable ? Math.max(2, Math.min(14, terminalRows - 14 - actionCount)) : undefined,
+			onContentLayout: (total, visible, offset) => {
+				this.detailContentLines = total;
+				this.detailVisibleLines = visible;
+				this.detailScrollOffset = offset;
+			},
 			theme: this.theme,
 			width,
 			item: this.detailItem,
@@ -377,29 +357,15 @@ export class ResourceBrowser implements Component, Focusable {
 		});
 	}
 
-	private renderPackageGroupsPage(width: number): string[] {
-		return renderPackageGroupsPageView({
-			theme: this.theme,
-			width,
-			pkg: this.packageItem,
-			entries: this.getPackageGroupEntries(),
-			selectedIndex: this.packageGroupSelectionIndex,
-			isPinned: (item) => this.isPinned(item),
-			getItemsForCategory: (category) => this.packageItem ? this.getPackageContainedItems(this.packageItem, category) : [],
-			formatBinaryToggle: (enabled, bold) => this.formatBinaryToggle(enabled, bold),
-		});
-	}
-
 	private renderPackageItemsPage(width: number): string[] {
 		return renderPackageItemsPageView({
 			theme: this.theme,
 			width,
-			pkg: this.packageItem,
 			items: this.packageContentsItems,
 			selectedIndex: this.packageContentsSelectedIndex,
 			maxVisible: this.maxVisible,
 			isPinned: (item) => this.isPinned(item),
-			emptyMessage: this.getEmptyPackageCategoryMessage(this.packageContentsCategory),
+			emptyMessage: this.getSearchQuery() ? "No package contents match the current search" : "This package has no discovered resources",
 			formatBinaryToggle: (enabled, bold) => this.formatBinaryToggle(enabled, bold),
 		});
 	}
@@ -413,7 +379,7 @@ export class ResourceBrowser implements Component, Focusable {
 			return this.renderFooterWithSettingsHint(width, groupFooter);
 		}
 		const selectedCategory = this.getSelectedResource()?.category ?? this.category;
-		return this.renderFooterWithSettingsHint(width, getListFooterText(selectedCategory));
+		return this.renderFooterWithSettingsHint(width, getListFooterText(selectedCategory, this.getSelectedResource()));
 	}
 
 	private renderAddPage(width: number): string[] {
@@ -429,8 +395,7 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private renderPackageFooter(width: number): string {
-		const selected = this.getPackageGroupEntries()[this.packageGroupSelectionIndex];
-		return this.renderFooterWithSettingsHint(width, getPackageFooterText(this.mode, selected));
+		return this.renderFooterWithSettingsHint(width, getPackageFooterText(SORT_MODE_LABELS[this.settings.sortMode]));
 	}
 
 	private renderFooterWithSettingsHint(width: number, text: string): string {
@@ -517,8 +482,23 @@ export class ResourceBrowser implements Component, Focusable {
 			loadingAction: this.loadingAction,
 			onOpenSettings: () => this.openSettings(),
 			onExitDetailMode: () => this.exitDetailMode(),
+			onToggleDescription: () => {
+				if (!this.detailDescriptionExpandable) return;
+				this.detailDescriptionExpanded = !this.detailDescriptionExpanded;
+				this.detailScrollOffset = 0;
+				this.confirmingRemove = false;
+			},
+			onScrollContent: (direction) => {
+				const contentEnd = Math.max(0, this.detailContentLines - this.detailVisibleLines);
+				const parameterCount = this.detailItem?.category === "tools" ? this.detailItem.parameters?.length ?? 0 : 0;
+				const parameterEnd = Math.max(0, parameterCount - TOOL_PARAMETER_WINDOW_SIZE);
+				// Reach the argument section first in short windows; then slide its four-argument window.
+				if (direction < 0 && this.detailParameterOffset > 0) this.detailParameterOffset--;
+				else if (direction > 0 && this.detailScrollOffset >= contentEnd && this.detailParameterOffset < parameterEnd) this.detailParameterOffset++;
+				else this.detailScrollOffset = Math.max(0, Math.min(contentEnd, this.detailScrollOffset + direction));
+			},
 			onTogglePinned: (item) => this.togglePinned(item),
-			onOpenPackageGroups: (item) => this.openPackageGroups(item),
+			onOpenPackageContents: (item) => this.openPackageContents(item),
 			onManageMcp: this.callbacks.onManageMcp,
 			onBrowseMcpTools: (item) => {
 				if (!isMcpItem(item)) return;
@@ -533,36 +513,6 @@ export class ResourceBrowser implements Component, Focusable {
 			onUpdateItem: (item) => this.callbacks.onUpdate?.(item),
 			onRemoveItem: (item) => this.callbacks.onRemove?.(item),
 			onAddResource: this.detailItem?.category === "tools" || this.detailItem?.category === "mcp" ? undefined : () => this.openAddMode(),
-		});
-	}
-
-	private handlePackageGroupsInput(data: string): void {
-		handlePackageGroupsInputMode(data, {
-			keybindings: this.keybindings,
-			packageItem: this.packageItem,
-			entries: this.getPackageGroupEntries(),
-			selectedIndex: this.packageGroupSelectionIndex,
-			setSelectedIndex: (value) => {
-				this.packageGroupSelectionIndex = value;
-			},
-			onOpenSettings: () => this.openSettings(),
-			onOpenDetailItem: (item) => this.openDetailItem(item, "packageGroups"),
-			onOpenParentPackage: (item) => this.openDetailItem(item, "list"),
-			onSetMode: (mode) => {
-				this.mode = mode;
-			},
-			onSetPackageContentsCategory: (category) => {
-				this.packageContentsCategory = category;
-				this.packageContentsSelectedIndex = 0;
-			},
-			onRefreshPackageContents: () => this.refreshPackageContentsItems(),
-			onTogglePinned: (item) => this.togglePinned(item),
-			onToggleItem: (item) => this.toggleItem(item),
-			onAddResource: () => this.openAddMode(),
-			searchInput: this.packageSearchInput,
-			getSearchQuery: () => this.getSearchQuery(),
-			onInvalidatePackageViewCaches: (packageId) => this.invalidatePackageViewCaches(packageId),
-			onGetEntriesLength: () => this.getPackageGroupEntries().length,
 		});
 	}
 
@@ -649,22 +599,19 @@ export class ResourceBrowser implements Component, Focusable {
 			selectedItem: this.packageContentsItems[this.packageContentsSelectedIndex],
 			itemsLength: this.packageContentsItems.length,
 			selectedIndex: this.packageContentsSelectedIndex,
-			setSelectedIndex: (value) => {
-				this.packageContentsSelectedIndex = value;
-			},
-			packageItem: this.packageItem,
-			packageContentsCategory: this.packageContentsCategory,
+			maxVisible: this.maxVisible,
+			setSelectedIndex: (value) => { this.packageContentsSelectedIndex = value; },
 			onOpenSettings: () => this.openSettings(),
-			onSetMode: (mode) => {
-				this.mode = mode;
+			onBack: () => {
+				if (this.packageItem) this.openDetailItem(this.packageItem, "list");
+				else this.mode = "list";
 			},
 			onOpenDetailItem: (item) => this.openDetailItem(item, "packageItems"),
 			onTogglePinned: (item) => this.togglePinned(item),
 			onToggleItem: (item) => this.toggleItem(item),
+			onCycleSortMode: () => this.cycleSortMode(),
 			onAddResource: () => this.openAddMode(),
 			searchInput: this.packageSearchInput,
-			getSearchQuery: () => this.getSearchQuery(),
-			onInvalidatePackageViewCaches: (packageId, category) => this.invalidatePackageViewCaches(packageId, category),
 			onRefreshPackageContents: () => this.refreshPackageContentsItems(),
 		});
 	}
@@ -739,12 +686,29 @@ export class ResourceBrowser implements Component, Focusable {
 		return Boolean(this.loadingAction || this.addState.loading);
 	}
 
-	public setResources(resources: ResourceIndex): void {
+	public setRuntimeTools(tools: ToolInfo[], active: string[], inventoryReady = true): void {
+		const builtinScope = this.resources.builtinToolScope ?? "user";
+		const toolItems = buildToolResourceItems(tools, active, builtinScope).sort((a, b) => {
+			if (a.scope !== b.scope) return a.scope === "project" ? -1 : 1;
+			return a.name.localeCompare(b.name);
+		});
+		this.setResources({
+			...this.resources,
+			categories: { ...this.resources.categories, tools: toolItems,
+				mcp: updateMcpToolInventory(this.resources.categories.mcp.filter(isMcpItem), tools, active, inventoryReady) },
+		}, false);
+	}
+
+	public setResources(resources: ResourceIndex, pruneState = true): void {
+		const selected = this.filteredListEntries[this.selectedIndex];
+		const selectedId = selected?.kind === "resource-group" ? selected.groupId : selected?.item.id;
+		const packageSelectedId = this.packageContentsItems[this.packageContentsSelectedIndex]?.id;
+		this.resources.builtinToolScope = resources.builtinToolScope ?? this.resources.builtinToolScope;
 		for (const category of CATEGORY_ORDER) {
 			this.resources.categories[category] = resources.categories[category];
 		}
 		this.rebuildSearchTextCache();
-		this.pruneSettingsState();
+		if (pruneState) this.pruneSettingsState();
 		this.invalidatePackageCaches();
 		if (this.detailItem) {
 			this.detailItem = this.resources.categories[this.detailItem.category].find((item) => isSameResource(item, this.detailItem));
@@ -758,16 +722,21 @@ export class ResourceBrowser implements Component, Focusable {
 				this.mode = "list";
 			}
 		}
-		if (this.mode === "packageGroups") {
-			this.packageGroupSelectionIndex = Math.max(
-				0,
-				Math.min(this.packageGroupSelectionIndex, Math.max(0, this.getPackageGroupEntries().length - 1)),
-			);
-		}
-		if (this.mode === "packageItems" && this.packageItem?.category === "packages") {
-			this.refreshPackageContentsItems();
-		}
+		if (this.packageItem) this.refreshPackageContentsItems(packageSelectedId);
 		this.applyFilter();
+		let selectedIndex = this.filteredListEntries.findIndex((entry) => selected?.kind === "resource-group"
+			? entry.kind === "resource-group" && entry.groupId === selectedId
+			: entry.kind !== "resource-group" && entry.item.id === selectedId);
+		if (selectedIndex < 0 && selected?.kind === "resource-group") {
+			// A group may shrink to a single row when tools are withdrawn.
+			const previousIds = new Set(selected.items.map((item) => item.id));
+			selectedIndex = this.filteredListEntries.findIndex((entry) => entry.kind === "resource-group"
+				? entry.items.some((item) => previousIds.has(item.id)) : previousIds.has(entry.item.id));
+		} else if (selectedIndex < 0 && selected) {
+			// A former single-tool source may become a collapsed group after late registration.
+			selectedIndex = this.filteredListEntries.findIndex((entry) => entry.kind === "resource-group" && entry.items.some((item) => item.id === selectedId));
+		}
+		if (selectedIndex >= 0) this.selectedIndex = selectedIndex;
 		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, this.filteredListEntries.length - 1));
 	}
 
@@ -786,7 +755,11 @@ export class ResourceBrowser implements Component, Focusable {
 	private exitDetailMode(): void {
 		this.mode = this.detailReturnMode;
 		this.detailItem = undefined;
+		this.detailDescriptionExpanded = false;
+		this.detailDescriptionExpandable = false;
 		this.detailSelectedIndex = 0;
+		this.detailScrollOffset = 0;
+		this.detailParameterOffset = 0;
 		this.confirmingRemove = false;
 		this.actionMessage = undefined;
 	}
@@ -808,20 +781,27 @@ export class ResourceBrowser implements Component, Focusable {
 	private openDetailItem(item: ResourceItem, returnMode: Exclude<BrowserMode, "detail">): void {
 		this.detailItem = item;
 		this.detailReturnMode = returnMode;
+		this.detailDescriptionExpanded = false;
+		this.detailDescriptionExpandable = false;
 		this.detailSelectedIndex = 0;
+		this.detailScrollOffset = 0;
+		this.detailParameterOffset = 0;
+		this.detailContentLines = 0;
+		this.detailVisibleLines = 0;
 		this.confirmingRemove = false;
 		this.actionMessage = undefined;
 		this.mode = "detail";
 		this.callbacks.onInspect?.(item);
 	}
 
-	private openPackageGroups(item: ResourceItem): void {
+	private openPackageContents(item: ResourceItem): void {
 		if (item.category !== "packages") return;
 		this.packageItem = item;
-		this.packageGroupSelectionIndex = 0;
+		this.packageContentsSelectedIndex = 0;
 		this.packageSearchInput.setValue("");
 		this.invalidatePackageViewCaches(item.id);
-		this.mode = "packageGroups";
+		this.mode = "packageItems";
+		this.refreshPackageContentsItems();
 	}
 
 	private getEntryResource(entry: BrowserListEntry | undefined): ResourceItem | undefined {
@@ -853,10 +833,10 @@ export class ResourceBrowser implements Component, Focusable {
 	private cycleSortMode(): void {
 		const modes = Object.keys(SORT_MODE_LABELS) as ResourceSortMode[];
 		const index = modes.indexOf(this.settings.sortMode);
-		const nextMode = modes[(index + 1 + modes.length) % modes.length]!;
-		this.settings = { ...this.settings, sortMode: nextMode };
+		this.settings = { ...this.settings, sortMode: modes[(index + 1 + modes.length) % modes.length]! };
 		this.callbacks.onSettingsChange?.(this.settings);
-		this.invalidateVisibleCategoryCache(this.category);
+		this.invalidatePackageCaches();
+		if (this.packageItem) this.refreshPackageContentsItems();
 		this.applyFilter();
 	}
 
@@ -949,15 +929,14 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private toggleItem(item: ResourceItem): void {
-		if (isMcpItem(item)) {
+		if (isMcpItem(item) && item.toggleMode === "none") {
 			this.callbacks.onManageMcp?.();
 			return;
 		}
-		if (!isThemeItem(item)) {
-			item.enabled = !item.enabled;
-		}
+		if (!isThemeItem(item)) item.enabled = !item.enabled;
 		this.invalidateItemCaches(item);
 		this.callbacks.onToggle?.(item);
+		if (this.packageItem) this.refreshPackageContentsItems();
 	}
 
 	private toggleExpose(item: ResourceItem): void {
@@ -968,26 +947,12 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private togglePinned(item: ResourceItem): void {
 		const current = this.settings.pinned ?? [];
-		const exists = current.includes(item.id);
-		const nextPinned = exists ? current.filter((id) => id !== item.id) : [item.id, ...current];
+		const nextPinned = current.includes(item.id) ? current.filter((id) => id !== item.id) : [item.id, ...current];
 		this.settings = { ...this.settings, pinned: nextPinned };
 		this.rebuildPinnedRank();
 		this.callbacks.onSettingsChange?.(this.settings);
-
-		// Rebuild sorted/filtered views and keep selection on the toggled item.
 		this.invalidateItemCaches(item);
-		if (this.mode === "packageItems" && this.packageItem?.category === "packages") {
-			this.packageContentsItems = this.getFilteredPackageContainedItems(this.packageItem, this.packageContentsCategory);
-			const nextIndex = this.packageContentsItems.findIndex((candidate) => candidate.id === item.id);
-			if (nextIndex !== -1) this.packageContentsSelectedIndex = nextIndex;
-
-			// Keep the main list consistent for when the user returns.
-			this.applyFilter();
-			const listIndex = this.filteredListEntries.findIndex((candidate) => this.getEntryResource(candidate)?.id === item.id);
-			if (listIndex !== -1) this.selectedIndex = listIndex;
-			return;
-		}
-
+		if (this.packageItem) this.refreshPackageContentsItems();
 		this.applyFilter();
 		const nextIndex = this.filteredListEntries.findIndex((candidate) => this.getEntryResource(candidate)?.id === item.id);
 		if (nextIndex !== -1) this.selectedIndex = nextIndex;
@@ -1007,12 +972,7 @@ export class ResourceBrowser implements Component, Focusable {
 			category: this.category,
 			detailItem: this.detailItem,
 			packageItem: this.packageItem,
-			packageContentsCategory: this.packageContentsCategory,
 		});
-	}
-
-	private getEmptyPackageCategoryMessage(category: PackageContentCategory): string {
-		return getEmptyPackageCategoryMessage(category, Boolean(this.getSearchQuery()));
 	}
 
 	private getPackageCategories(): PackageContentCategory[] {
@@ -1020,48 +980,25 @@ export class ResourceBrowser implements Component, Focusable {
 	}
 
 	private getActiveSearchInput(): Input {
-		return this.mode === "packageGroups" || this.mode === "packageItems" ? this.packageSearchInput : this.mainSearchInput;
+		return this.mode === "packageItems" ? this.packageSearchInput : this.mainSearchInput;
 	}
 
 	private getSearchQuery(): string {
 		return this.packageSearchInput.getValue().trim().toLowerCase();
 	}
 
-	private getFilteredPackageContainedItems(pkg: ResourceItem, category: PackageContentCategory): ResourceItem[] {
-		const query = this.getSearchQuery();
-		const cacheKey = `${pkg.id}:${category}:${query}`;
-		const cached = this.filteredPackageItemsCache.get(cacheKey);
-		if (cached) return cached;
-		const items = this.getPackageContainedItems(pkg, category);
-		const filtered = filterPackageContainedItems(items, category, query, (item, itemQuery) => this.matchesResourceQuery(item, itemQuery));
-		this.filteredPackageItemsCache.set(cacheKey, filtered);
-		return filtered;
-	}
-
-	private refreshPackageContentsItems(): void {
-		if (!this.packageItem || this.packageItem.category !== "packages") return;
-		this.packageContentsItems = this.getFilteredPackageContainedItems(this.packageItem, this.packageContentsCategory);
-		this.packageContentsSelectedIndex = Math.max(
-			0,
-			Math.min(this.packageContentsSelectedIndex, Math.max(0, this.packageContentsItems.length - 1)),
-		);
-	}
-
-	private getPackageGroupEntries(): PackageGroupEntry[] {
+	private refreshPackageContentsItems(selectedId = this.packageContentsItems[this.packageContentsSelectedIndex]?.id): void {
 		const pkg = this.packageItem;
-		if (!pkg || pkg.category !== "packages") return [];
+		if (!pkg || pkg.category !== "packages") return;
 		const query = this.getSearchQuery();
-		if (this.packageGroupEntriesCache?.packageId === pkg.id && this.packageGroupEntriesCache.query === query) {
-			return this.packageGroupEntriesCache.entries;
-		}
-		const entries = buildPackageGroupEntries(
-			this.getPackageCategories(),
-			query,
-			this.settings.packagePreviewLimit,
-			(category) => this.getFilteredPackageContainedItems(pkg, category),
+		const items = this.getPackageCategories().flatMap((category) => this.getPackageContainedItems(pkg, category));
+		this.packageContentsItems = sortResourceItems(
+			items.filter((item) => this.matchesResourceQuery(item, query)), this.settings,
+			(item) => this.isPinned(item), (item) => this.getPinnedRank(item),
 		);
-		this.packageGroupEntriesCache = { packageId: pkg.id, query, entries };
-		return entries;
+		const selectedIndex = this.packageContentsItems.findIndex((item) => item.id === selectedId);
+		this.packageContentsSelectedIndex = selectedIndex >= 0 ? selectedIndex
+			: Math.max(0, Math.min(this.packageContentsSelectedIndex, this.packageContentsItems.length - 1));
 	}
 
 	private getPackageContainedItems(pkg: ResourceItem, category: PackageContentCategory): ResourceItem[] {
@@ -1076,7 +1013,7 @@ export class ResourceBrowser implements Component, Focusable {
 
 	private getCurrentAddScopeContext(): "project" | "user" {
 		if (this.mode === "detail" && this.detailItem) return this.detailItem.scope === "project" ? "project" : "user";
-		if ((this.mode === "packageGroups" || this.mode === "packageItems") && this.packageItem?.category === "packages") return this.packageItem.scope;
+		if (this.mode === "packageItems" && this.packageItem?.category === "packages") return this.packageItem.scope;
 		const selectedItem = this.getSelectedResource();
 		return selectedItem ? (selectedItem.scope === "project" ? "project" : "user") : "project";
 	}
@@ -1326,16 +1263,6 @@ export class ResourceBrowser implements Component, Focusable {
 			},
 		];
 
-		const packages: SettingItem[] = [
-			{
-				id: "packagePreviewLimit",
-				label: "Package preview size",
-				description: "How many items to show per category in grouped package view.",
-				currentValue: String(this.settings.packagePreviewLimit),
-				values: ["3", "5", "8"],
-			},
-		];
-
 		const search: SettingItem[] = [
 			{
 				id: "searchIncludeDescription",
@@ -1362,11 +1289,9 @@ export class ResourceBrowser implements Component, Focusable {
 
 		switch (section) {
 			case "all":
-				return [...display, ...packages, ...search, ...integrations];
+				return [...display, ...search, ...integrations];
 			case "display":
 				return display;
-			case "packages":
-				return packages;
 			case "search":
 				return search;
 			case "integrations":
@@ -1393,9 +1318,6 @@ export class ResourceBrowser implements Component, Focusable {
 				break;
 			case "sortMode":
 				next.sortMode = sortModeFromLabel(newValue);
-				break;
-			case "packagePreviewLimit":
-				next.packagePreviewLimit = Number(newValue) as ResourceCenterSettings["packagePreviewLimit"];
 				break;
 			case "searchIncludeDescription":
 				next.searchIncludeDescription = newValue === "true";
@@ -1426,6 +1348,7 @@ export class ResourceBrowser implements Component, Focusable {
 		this.rebuildPinnedRank();
 		this.callbacks.onSettingsChange?.(this.settings);
 		this.invalidatePackageCaches();
+		if (this.packageItem) this.refreshPackageContentsItems();
 		this.applyFilter();
 	}
 

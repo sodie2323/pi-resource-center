@@ -58,6 +58,7 @@ export interface ResourceCenterSettings {
 	reloadBehavior: ReloadBehavior;
 	pinned: string[];
 	disabledExternalSkills: string[];
+	/** Legacy preference retained on disk; flat package contents no longer use previews. */
 	packagePreviewLimit: 3 | 5 | 8;
 	searchIncludeDescription: boolean;
 	searchIncludePath: boolean;

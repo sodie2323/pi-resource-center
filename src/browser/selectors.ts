@@ -2,7 +2,7 @@
  * 浏览器中的资源筛选、排序与 package 内容选择逻辑。
  */
 import type { ResourceCenterSettings } from "../settings.js";
-import { CATEGORY_LABELS, formatResourceSourceLabel, type BrowserListEntry, type PackageContentCategory, type PackageGroupEntry } from "./shared.js";
+import { formatResourceSourceLabel, type BrowserListEntry, type PackageContentCategory } from "./shared.js";
 import { belongsToPackage } from "../resource/identity.js";
 import { getToolGroupId } from "../resource/tool-runtime.js";
 import type { ResourceCategory, ResourceIndex, ResourceItem } from "../types.js";
@@ -75,38 +75,6 @@ export function getPackageContainedItems(
 	if (pkg.category !== "packages") return [];
 	const items = resources.categories[category].filter((item) => belongsToPackage(item, pkg));
 	return sortResourceItems(items, settings, isPinned, getPinnedRank);
-}
-
-export function getFilteredPackageContainedItems(
-	items: ResourceItem[],
-	category: PackageContentCategory,
-	query: string,
-	matchesQuery: (item: ResourceItem, query: string) => boolean,
-): ResourceItem[] {
-	if (!query || CATEGORY_LABELS[category].toLowerCase().includes(query)) return items;
-	return items.filter((item) => matchesQuery(item, query));
-}
-
-export function buildPackageGroupEntries(
-	categories: PackageContentCategory[],
-	query: string,
-	previewLimit: ResourceCenterSettings["packagePreviewLimit"],
-	getItems: (category: PackageContentCategory) => ResourceItem[],
-): PackageGroupEntry[] {
-	const entries: PackageGroupEntry[] = [];
-	for (const category of categories) {
-		const categoryMatches = !query || CATEGORY_LABELS[category].toLowerCase().includes(query);
-		const items = getItems(category);
-		if (!categoryMatches && items.length === 0) continue;
-		entries.push({ kind: "category", category });
-		for (const item of items.slice(0, previewLimit)) {
-			entries.push({ kind: "item", category, item });
-		}
-		if (items.length > previewLimit) {
-			entries.push({ kind: "more", category, remaining: items.length - previewLimit });
-		}
-	}
-	return entries;
 }
 
 export function buildBrowserListEntries(

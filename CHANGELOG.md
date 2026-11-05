@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-11-05
+
+### Added
+- Compact tool-argument details with description-first inline rows, semantic name/type colors, subdued explanations/defaults and required markers; a four-argument display window, responsive wrapping and `j/k` scrolling keep long argument lists accessible without displacing actions or rebinding `PgUp/PgDn`. Arrow keys continue to select actions. Visible argument metadata also follows live inventory updates.
+- Prompt body previews, limited to six wrapped lines, with frontmatter excluded, truncation indicated, and repeated descriptions omitted. Preview caches are bounded and retain project trust checks.
+- MCP servers can now be enabled/disabled with Space, detail actions, and `/resource enable/disable mcp <name>`. File-backed servers save only their enabled flag and follow the existing reload preference; editable extension registrations use Pi's API for session changes. Ownership restrictions and unknown runtime-only servers retain native `/mcp` guidance.
+
+### Changed
+- Long descriptions default to four wrapped lines with an inline `o` expand/collapse toggle. Consolidated content scrolling into one hint and removed body-line counters; narrow layouts preserve resource/action names before statistics, paths and auxiliary hints.
+- Browse Package Contents now opens a flat cross-type search list using the normal resource rows, with type labels and paths only for same-name disambiguation. Removed category headings, preview limits, “more” navigation and the obsolete preview-size control; existing preferences on disk are preserved. Sorting, pinning, toggles and detail return retain resource identity.
+- Detail sections use plain bold headings rather than competing accent colors. Tool arguments distinguish names, explanations, types and defaults using theme roles; existing selection/status styling is unchanged.
+- MCP and Tools inventories now update automatically while the browser is open, using a lightweight runtime-only check that preserves focus, searches, group expansion, and pins. Empty initial MCP inventories show a fetching state until the first live check, then the visible count (including zero), and continue updating for late tools; disabled rows omit tool counts. No new shortcut, repeated file discovery, or extra MCP connection is introduced.
+- Aligned MCP list rows, checkbox colors, metadata labels, detail sections and action hints with the other resource categories; retained distinct unknown/error markers and configuration-versus-connection guidance.
+
+### Fixed
+- Removed stacked spacers before detail descriptions and trimmed only surrounding blank lines; paragraph breaks and indentation remain intact, and empty descriptions no longer leave empty headings.
+- Preserve unrelated MCP configuration, project overrides, credentials, BOM, indentation, and newline style when toggling servers. Reject stale/invalid configuration and wait for pending MCP writes before closing/reloading.
+
+### Known Limitations
+- When both expanded description content and tool arguments overflow, `j/k` still uses the existing sequential scrolling behavior: down scrolls the content before advancing the four-argument window; up restores the argument window before scrolling the content. Explicit scrolling modes are not part of this release.
+
 ## [0.4.0] - 2026-10-23
 
 ### Breaking Changes

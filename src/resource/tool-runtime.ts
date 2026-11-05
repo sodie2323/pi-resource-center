@@ -1,6 +1,7 @@
 import { basename, extname } from "node:path";
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { setDefaultToolStates } from "../settings/mutations.js";
+import { summarizeToolParameters } from "./tool-parameters.js";
 import type { ToolResourceItem, ToolResourceScope } from "../types.js";
 
 export interface ToolRuntime {
@@ -8,6 +9,7 @@ export interface ToolRuntime {
 	getActiveTools(): string[];
 	setActiveTools(toolNames: string[]): void;
 	getMcpServers?: ExtensionAPI["getMcpServers"];
+	registerMcpServer?: ExtensionAPI["registerMcpServer"];
 	sendUserMessage?: ExtensionAPI["sendUserMessage"];
 	getCommands?: ExtensionAPI["getCommands"];
 }
@@ -55,6 +57,7 @@ export function buildToolResourceItems(
 			toolNamespace: tool.namespace?.name,
 			toolSourcePath: tool.sourceInfo.path,
 			toolSourceOrigin: tool.sourceInfo.origin,
+			parameters: summarizeToolParameters(tool.parameters),
 			packageSource: tool.sourceInfo.origin === "package" ? tool.sourceInfo.source : undefined,
 		};
 	});

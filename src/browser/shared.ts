@@ -20,17 +20,16 @@ export const CATEGORY_LABELS: Record<ResourceCategory, string> = {
 	mcp: "MCP",
 };
 
-export type BrowserMode = "list" | "detail" | "packageGroups" | "packageItems" | "settings" | "add";
+export type BrowserMode = "list" | "detail" | "packageItems" | "settings" | "add";
 export type DetailAction = "manage" | "toggle" | "pin" | "expose" | "update" | "remove" | "mcp-manager" | "mcp-tools" | "back";
 export type PackageContentCategory = Exclude<ResourceCategory, "packages" | "tools" | "mcp">;
 export const PACKAGE_CONTENT_CATEGORIES: PackageContentCategory[] = ["extensions", "skills", "prompts", "themes"];
 
-export type SettingsSection = "all" | "display" | "packages" | "search" | "integrations";
-export const SETTINGS_SECTION_ORDER: SettingsSection[] = ["all", "display", "packages", "search", "integrations"];
+export type SettingsSection = "all" | "display" | "search" | "integrations";
+export const SETTINGS_SECTION_ORDER: SettingsSection[] = ["all", "display", "search", "integrations"];
 export const SETTINGS_SECTION_LABELS: Record<SettingsSection, string> = {
 	all: "All",
 	display: "Display",
-	packages: "Packages",
 	search: "Search",
 	integrations: "Integrations",
 };
@@ -73,11 +72,6 @@ export function formatResourceSourceLabel(item: ResourceItem): string {
 	if (item.category === "packages") return formatPackageLabel(item.source);
 	return item.sourceLabel ?? item.source;
 }
-
-export type PackageGroupEntry =
-	| { kind: "category"; category: PackageContentCategory }
-	| { kind: "item"; category: PackageContentCategory; item: ResourceItem }
-	| { kind: "more"; category: PackageContentCategory; remaining: number };
 
 export type BrowserListEntry =
 	| { kind: "resource"; item: ResourceItem }

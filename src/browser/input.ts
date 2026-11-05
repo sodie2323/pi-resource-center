@@ -5,8 +5,7 @@ import type { Input, KeybindingsManager, SettingsList } from "@earendil-works/pi
 import { getDetailActions } from "./actions.js";
 import { moveSelection } from "./navigation.js";
 import { canExposeResource, canManagePackageContents, isPackageItem, isToolItem, isMcpItem, supportsPackageUpdate } from "../resource/capabilities.js";
-import { getPackageResourceId } from "../resource/identity.js";
-import type { BrowserListEntry, BrowserMode, PackageContentCategory, PackageGroupEntry } from "./shared.js";
+import type { BrowserListEntry, BrowserMode } from "./shared.js";
 import type { ResourceItem } from "../types.js";
 
 export function handleListInput(data: string, args: {
@@ -70,8 +69,10 @@ export function handleDetailInput(data: string, args: {
 	loadingAction?: string;
 	onOpenSettings: () => void;
 	onExitDetailMode: () => void;
+	onScrollContent?: (direction: -1 | 1) => void;
+	onToggleDescription?: () => void;
 	onTogglePinned: (item: ResourceItem) => void;
-	onOpenPackageGroups: (item: ResourceItem) => void;
+	onOpenPackageContents: (item: ResourceItem) => void;
 	onManageMcp?: () => void;
 	onBrowseMcpTools?: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
@@ -82,6 +83,7 @@ export function handleDetailInput(data: string, args: {
 }): void {
 	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
+	if (data === "o") return args.onToggleDescription?.();
 	if (data === "P") {
 		if (args.detailItem && !isToolItem(args.detailItem)) args.onTogglePinned(args.detailItem);
 		return;
@@ -94,6 +96,14 @@ export function handleDetailInput(data: string, args: {
 			return;
 		}
 		return args.onExitDetailMode();
+	}
+	if (data === "j" || data === "J" || data === "k" || data === "K") {
+		if (args.confirmingRemove) {
+			args.setConfirmingRemove(false);
+			args.clearActionMessage();
+		}
+		args.onScrollContent?.(data.toLowerCase() === "k" ? -1 : 1);
+		return;
 	}
 	const actions = args.detailItem ? getDetailActions(args.detailItem) : [];
 	if (kb.matches(data, "tui.select.up")) {
@@ -132,7 +142,7 @@ export function handleDetailInput(data: string, args: {
 			if (isMcpItem(args.detailItem)) args.onBrowseMcpTools?.(args.detailItem);
 			return;
 		case "manage":
-			if (canManagePackageContents(args.detailItem)) args.onOpenPackageGroups(args.detailItem);
+			if (canManagePackageContents(args.detailItem)) args.onOpenPackageContents(args.detailItem);
 			return;
 		case "toggle":
 			return args.onToggleItem(args.detailItem);
@@ -146,52 +156,6 @@ export function handleDetailInput(data: string, args: {
 		case "back":
 			return args.onExitDetailMode();
 	}
-}
-
-export function handlePackageGroupsInput(data: string, args: {
-	keybindings: KeybindingsManager;
-	packageItem?: ResourceItem;
-	entries: PackageGroupEntry[];
-	selectedIndex: number;
-	setSelectedIndex: (value: number) => void;
-	onOpenSettings: () => void;
-	onOpenDetailItem: (item: ResourceItem) => void;
-	onOpenParentPackage: (item: ResourceItem) => void;
-	onSetMode: (mode: BrowserMode) => void;
-	onSetPackageContentsCategory: (category: PackageContentCategory) => void;
-	onRefreshPackageContents: () => void;
-	onTogglePinned: (item: ResourceItem) => void;
-	onToggleItem: (item: ResourceItem) => void;
-	onAddResource?: () => void;
-	searchInput: Input;
-	getSearchQuery: () => string;
-	onInvalidatePackageViewCaches: (packageId?: string) => void;
-	onGetEntriesLength: () => number;
-}): void {
-	const kb = args.keybindings;
-	if (data === "S") return args.onOpenSettings();
-	if (kb.matches(data, "tui.select.cancel")) {
-		if (args.packageItem) return args.onOpenParentPackage(args.packageItem);
-		return args.onSetMode("list");
-	}
-	if (kb.matches(data, "tui.select.up")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.entries.length, -1));
-	if (kb.matches(data, "tui.select.down")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.entries.length, 1));
-	if (data === "A") return void args.onAddResource?.();
-	const selected = args.entries[args.selectedIndex];
-	if (selected && data === "P" && selected.kind === "item") return args.onTogglePinned(selected.item);
-	if (selected && data === " " && selected.kind === "item") return args.onToggleItem(selected.item);
-	if (selected && kb.matches(data, "tui.select.confirm") && args.packageItem && isPackageItem(args.packageItem)) {
-		if (selected.kind === "item") return args.onOpenDetailItem(selected.item);
-		args.onSetPackageContentsCategory(selected.category);
-		args.onRefreshPackageContents();
-		return args.onSetMode("packageItems");
-	}
-	const previousQuery = args.getSearchQuery();
-	args.searchInput.handleInput(data);
-	if (args.getSearchQuery() !== previousQuery) {
-		args.onInvalidatePackageViewCaches(args.packageItem && isPackageItem(args.packageItem) ? getPackageResourceId(args.packageItem.scope, args.packageItem.source) : undefined);
-	}
-	args.setSelectedIndex(moveSelection(args.selectedIndex, args.onGetEntriesLength(), 0));
 }
 
 export function handleSettingsInput(data: string, args: {
@@ -229,25 +193,26 @@ export function handlePackageItemsInput(data: string, args: {
 	selectedItem?: ResourceItem;
 	itemsLength: number;
 	selectedIndex: number;
+	maxVisible: number;
 	setSelectedIndex: (value: number) => void;
-	packageItem?: ResourceItem;
-	packageContentsCategory: PackageContentCategory;
 	onOpenSettings: () => void;
-	onSetMode: (mode: BrowserMode) => void;
+	onBack: () => void;
 	onOpenDetailItem: (item: ResourceItem) => void;
 	onTogglePinned: (item: ResourceItem) => void;
 	onToggleItem: (item: ResourceItem) => void;
+	onCycleSortMode: () => void;
 	onAddResource?: () => void;
 	searchInput: Input;
-	getSearchQuery: () => string;
-	onInvalidatePackageViewCaches: (packageId: string | undefined, category: PackageContentCategory) => void;
 	onRefreshPackageContents: () => void;
 }): void {
 	const kb = args.keybindings;
 	if (data === "S") return args.onOpenSettings();
-	if (kb.matches(data, "tui.select.cancel")) return args.onSetMode("packageGroups");
+	if (kb.matches(data, "tui.select.cancel")) return args.onBack();
+	if (kb.matches(data, "tui.input.tab")) return args.onCycleSortMode();
 	if (kb.matches(data, "tui.select.up")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.itemsLength, -1));
 	if (kb.matches(data, "tui.select.down")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.itemsLength, 1));
+	if (kb.matches(data, "tui.select.pageUp")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.itemsLength, -args.maxVisible));
+	if (kb.matches(data, "tui.select.pageDown")) return args.setSelectedIndex(moveSelection(args.selectedIndex, args.itemsLength, args.maxVisible));
 	if (kb.matches(data, "tui.select.confirm")) {
 		if (args.selectedItem) args.onOpenDetailItem(args.selectedItem);
 		return;
@@ -261,10 +226,10 @@ export function handlePackageItemsInput(data: string, args: {
 		if (args.selectedItem) args.onToggleItem(args.selectedItem);
 		return;
 	}
-	const previousQuery = args.getSearchQuery();
+	const previousQuery = args.searchInput.getValue();
 	args.searchInput.handleInput(data);
-	if (args.getSearchQuery() !== previousQuery) {
-		args.onInvalidatePackageViewCaches(args.packageItem && isPackageItem(args.packageItem) ? getPackageResourceId(args.packageItem.scope, args.packageItem.source) : undefined, args.packageContentsCategory);
+	if (args.searchInput.getValue() !== previousQuery) {
+		args.setSelectedIndex(0);
+		args.onRefreshPackageContents();
 	}
-	args.onRefreshPackageContents();
 }

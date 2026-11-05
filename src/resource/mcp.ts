@@ -1,4 +1,4 @@
-/** Read-only MCP overview. Connections, credentials and mutations remain owned by Pi. */
+/** MCP overview. Pi owns connections/credentials; configured enabled flags can be edited separately. */
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionCommandContext, ToolInfo } from "@earendil-works/pi-coding-agent";
@@ -22,7 +22,6 @@ export async function discoverMcpServers(
 ): Promise<McpServerResourceItem[]> {
 	const servers = new Map<string, Server>();
 	const diagnostics: McpServerResourceItem[] = [];
-	const resourceTools = tools.filter((tool) => RESOURCE_TOOLS.has(tool.name) && tool.exposure !== "hidden").map((tool) => tool.name);
 	const files: Array<{ path: string; scope: "user" | "project" }> = [{ path: join(USER_AGENT_DIR, "mcp.json"), scope: "user" }];
 	if (projectTrusted) files.push({ path: join(dirname(getProjectSettingsPath(cwd)), "mcp.json"), scope: "project" });
 
@@ -70,36 +69,60 @@ export async function discoverMcpServers(
 		if (!servers.has(namespace)) servers.set(namespace, { name: server.name, config: server.config as unknown as Config,
 			source: server.extensionPath, scope: "session", label: "extension registration" });
 	}
+	const items = [...servers].map(([namespace, server]): McpServerResourceItem => {
+		const configState = server.source === "runtime" ? "unknown" : server.config.enabled === false ? "disabled" : "enabled";
+		return {
+			category: "mcp", id: `mcp:${namespace}`, name: server.name, scope: server.scope,
+			source: server.source, sourceLabel: server.label,
+			description: typeof server.config.description === "string" ? server.config.description : "MCP server managed by Pi.",
+			enabled: configState !== "disabled", configState,
+			toggleMode: server.source === "runtime" ? "none" : server.scope === "session" ? "registration" : "config",
+			exposure: typeof server.config.exposure === "string"
+				? server.config.exposure === "codemode-deferred" ? "codemode" : server.config.exposure
+				: configState === "unknown" ? undefined : "codemode",
+			transport: typeof server.config.url === "string" ? "http" : typeof server.config.command === "string" ? "stdio" : undefined,
+			namespace, toolNames: [], activeToolCount: 0, resourceTools: [],
+		};
+	});
+	return updateMcpToolInventory([...items, ...diagnostics], tools, activeTools, false);
+}
+
+/** Merge only the runtime inventory; no config reads, skill sync, connections or writes. */
+export function updateMcpToolInventory(
+	servers: McpServerResourceItem[],
+	tools: ToolInfo[],
+	activeTools: string[],
+	inventoryReady = true,
+): McpServerResourceItem[] {
 	const byNamespace = new Map<string, ToolInfo[]>();
+	const resourceTools: string[] = [];
 	for (const tool of tools) {
 		if (tool.exposure === "hidden") continue;
+		if (RESOURCE_TOOLS.has(tool.name)) resourceTools.push(tool.name);
 		const namespace = tool.namespace?.name;
 		if (!namespace?.startsWith("mcp__")) continue;
 		const grouped = byNamespace.get(namespace) ?? [];
 		grouped.push(tool);
 		byNamespace.set(namespace, grouped);
-		if (!servers.has(namespace)) servers.set(namespace, { name: namespace.slice("mcp__".length), config: {},
-			scope: "session", source: "runtime", label: "runtime tools" });
 	}
 	const active = new Set(activeTools);
-	const items = [...servers].map(([namespace, server]): McpServerResourceItem => {
-		const registered = byNamespace.get(namespace) ?? [];
-		const configState = server.source === "runtime" ? "unknown" : server.config.enabled === false ? "disabled" : "enabled";
-		return {
-			category: "mcp", id: `mcp:${namespace}`, name: server.name, scope: server.scope,
-			source: server.source, sourceLabel: server.label,
-			description: typeof server.config.description === "string" ? server.config.description : "MCP server. Manage connections, authentication and server configuration with native /mcp.",
-			enabled: configState !== "disabled", configState,
-			exposure: typeof server.config.exposure === "string"
-				? server.config.exposure === "codemode-deferred" ? "codemode" : server.config.exposure
-				: configState === "unknown" ? undefined : "codemode",
-			transport: typeof server.config.url === "string" ? "http" : typeof server.config.command === "string" ? "stdio" : undefined,
-			namespace, toolNames: registered.map((tool) => tool.name).sort(),
-			activeToolCount: registered.filter((tool) => active.has(tool.name)).length,
-			resourceTools: [...resourceTools],
-		};
-	});
-	return [...items, ...diagnostics].sort((a, b) => a.name.localeCompare(b.name));
+	const items = servers.filter((server) => server.source !== "runtime" || byNamespace.has(server.namespace));
+	const known = new Set(items.map((server) => server.namespace));
+	for (const namespace of byNamespace.keys()) {
+		if (known.has(namespace)) continue;
+		items.push({
+			category: "mcp", id: `mcp:${namespace}`, name: namespace.slice("mcp__".length), namespace,
+			scope: "session", source: "runtime", sourceLabel: "runtime tools", description: "MCP server managed by Pi.",
+			enabled: true, configState: "unknown", toggleMode: "none", toolNames: [], activeToolCount: 0, resourceTools: [],
+		});
+	}
+	return items.map((server) => {
+		if (server.configState === "error") return server;
+		const registered = byNamespace.get(server.namespace) ?? [];
+		return { ...server, toolNames: registered.map((tool) => tool.name).sort(),
+			toolsLoading: server.enabled && registered.length === 0 && !inventoryReady,
+			activeToolCount: registered.filter((tool) => active.has(tool.name)).length, resourceTools: [...resourceTools].sort() };
+	}).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Dispatch only an existing slash command; never accidentally send /mcp to a model. */
@@ -115,6 +138,6 @@ function diagnostic(path: string, scope: "user" | "project", message: string, na
 	return {
 		category: "mcp", id: `mcp:diagnostic:${path}:${name ?? "file"}`, name: name && /^[A-Za-z0-9_-]+$/.test(name) ? name : `${scope} MCP config`,
 		scope, source: path, sourceLabel: `${scope}:mcp.json`, description: message,
-		enabled: false, configState: "error", namespace: "", toolNames: [], activeToolCount: 0, resourceTools: [],
+		enabled: false, configState: "error", toggleMode: "none", namespace: "", toolNames: [], activeToolCount: 0, resourceTools: [],
 	};
 }

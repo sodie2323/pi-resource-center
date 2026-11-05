@@ -4,8 +4,10 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ResourceBrowser } from "../browser/browser.js";
 import { openNativeMcpManager } from "./mcp.js";
+import { setMcpServerEnabled } from "./mcp-mutations.js";
+import { observeRuntimeTools } from "./tool-observer.js";
 import { discoverResources } from "./discovery.js";
-import { canRemoveResourceIndividually, isPackageItem, isResourceCenterPackage, isThemeItem, isToolItem, supportsPackageUpdate } from "./capabilities.js";
+import { canRemoveResourceIndividually, isPackageItem, isResourceCenterPackage, isThemeItem, isToolItem, isMcpItem, supportsPackageUpdate } from "./capabilities.js";
 import { buildSuccessOperationMessage, ResourceOperationStatusController } from "./operation-status.js";
 import {
 	getExposeErrorMessage,
@@ -33,13 +35,16 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 	let hasPendingChanges = false;
 	let requestMcpManager = false;
 	let closeWork: Promise<void> | undefined;
+	let stopRuntimeUpdates = () => {};
 
-	await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+	const openBrowser = () => ctx.ui.custom<void>((tui, theme, keybindings, done) => {
 		let browserOpen = true;
 		let browser!: ResourceBrowser;
+		let toolObserver: ReturnType<typeof observeRuntimeTools> | undefined;
 		let refreshGeneration = 0;
 		let settingsSaveQueue: Promise<void> = Promise.resolve();
 		let toolMutationQueue: Promise<unknown> = Promise.resolve();
+		let mcpMutationQueue: Promise<unknown> = Promise.resolve();
 		const requestRender = () => {
 			if (browserOpen) tui.requestRender();
 		};
@@ -53,6 +58,8 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			});
 			if (!browserOpen || generation !== refreshGeneration) return;
 			browser.setResources(nextResources);
+			// File discovery may have overlapped a runtime update; always merge the latest inventory.
+			toolObserver?.refresh(true);
 			requestRender();
 		};
 		const operationStatus = new ResourceOperationStatusController(ctx.ui, theme, {
@@ -75,9 +82,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 		};
 		const closeBrowser = async () => {
 			browserOpen = false;
+			stopRuntimeUpdates();
 			refreshGeneration += 1;
 			done(undefined);
-			await Promise.all([settingsSaveQueue, toolMutationQueue]);
+			await Promise.all([settingsSaveQueue, toolMutationQueue, mcpMutationQueue]);
 			if (!hasPendingChanges) return;
 			if (requestMcpManager) {
 				ctx.ui.notify("Other resource settings were saved. Run /reload to apply them.", "info");
@@ -124,6 +132,21 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 					setActionMessage("toggle", "warning", "Resource Center cannot disable itself while it is running. Use pi config if this is intentional.");
 					return;
 				}
+				if (isMcpItem(item)) {
+					const enabled = item.enabled;
+					const operation = mcpMutationQueue.then(async () => {
+						const result = await setMcpServerEnabled(ctx.cwd, item, enabled, ctx.isProjectTrusted(), toolRuntime);
+						if (result.requiresReload) hasPendingChanges = true;
+						return result;
+					});
+					mcpMutationQueue = operation.catch(() => undefined);
+					const result = await operation;
+					if (browserOpen) await refreshBrowser();
+					const message = result.requiresReload ? `${result.message} · /reload required` : result.message;
+					setActionMessage("toggle", "info", message);
+					ctx.ui.notify(message, "info");
+					return;
+				}
 				if (isToolItem(item)) {
 					const settingsPath = await updateTools([item], item.enabled);
 					await refreshBrowser();
@@ -157,6 +180,10 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			} catch (error: unknown) {
 				if (item.category !== "themes") item.enabled = !item.enabled;
 				setActionMessage("toggle", "error", getToggleErrorMessage(item, error));
+				if (isMcpItem(item)) {
+					ctx.ui.notify(getToggleErrorMessage(item, error), "warning");
+					if (browserOpen) await refreshBrowser();
+				}
 			}
 		};
 		const toggleGroup = async (items: ResourceItem[], enabled: boolean, label: string) => {
@@ -281,8 +308,14 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			},
 			onRequestRender: requestRender,
 		}, ctx.cwd, keybindings);
+		toolObserver = observeRuntimeTools(toolRuntime, ({ tools, active, ready }) => {
+			if (!browserOpen) return;
+			browser.setRuntimeTools(tools, active, ready);
+			requestRender();
+		});
+		stopRuntimeUpdates = () => toolObserver?.dispose();
 		return {
-			render: (width) => browser.render(width),
+			render: (width) => browser.render(width, tui.terminal?.rows),
 			invalidate: () => browser.invalidate(),
 			handleInput: (data) => {
 				browser.handleInput(data);
@@ -290,6 +323,11 @@ export async function openResourceBrowser(category: ResourceCategory, ctx: Exten
 			},
 		};
 	});
+	try {
+		await openBrowser();
+	} finally {
+		stopRuntimeUpdates();
+	}
 	await closeWork;
 	if (requestMcpManager) openNativeMcpManager(toolRuntime, ctx);
 }

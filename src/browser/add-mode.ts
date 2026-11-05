@@ -12,7 +12,7 @@ export interface AddModeState {
 	selectedCandidateIndex: number;
 	loading: boolean;
 	requestId: number;
-	returnMode: "list" | "detail" | "packageGroups" | "packageItems" | "settings";
+	returnMode: "list" | "detail" | "packageItems" | "settings";
 }
 
 export function createInitialAddModeState(scope: "project" | "user", returnMode: AddModeState["returnMode"]): AddModeState {

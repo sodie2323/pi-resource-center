@@ -2,16 +2,27 @@
  * 浏览器各页面的纯渲染函数。
  */
 import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { BrowserListEntry, BrowserTheme, DetailAction, PackageContentCategory, PackageGroupEntry, SettingsSection } from "./shared.js";
+import type { BrowserListEntry, BrowserTheme, DetailAction, SettingsSection } from "./shared.js";
 import { CATEGORY_LABELS, CATEGORY_ORDER, SETTINGS_SECTION_LABELS, SETTINGS_SECTION_ORDER, SORT_MODE_LABELS, formatResourceSourceLabel } from "./shared.js";
-import { canExposeResource, isContainedResource, isPackageItem, isMcpItem } from "../resource/capabilities.js";
+import { isContainedResource, isPackageItem, isMcpItem } from "../resource/capabilities.js";
 import type { ResourceCategory, ResourceItem } from "../types.js";
+import { DESCRIPTION_PREVIEW_LINES, TOOL_PARAMETER_WINDOW_SIZE, promptRepeatsDescription, renderPromptPreview, renderToolParameters } from "./detail-content.js";
 
-export function renderHeader(theme: BrowserTheme, width: number, title: string, count: number): string[] {
-	const left = theme.fg("accent", theme.bold(title));
+export function renderHeader(theme: BrowserTheme, width: number, title: string, count: number, primaryTitle?: string): string[] {
 	const right = theme.fg("muted", `${count} result${count === 1 ? "" : "s"}`);
-	const spacing = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-	return [truncateToWidth(`${left}${" ".repeat(spacing)}${right}`, width, "")];
+	if (visibleWidth(title) + visibleWidth(right) + 2 <= width) {
+		const left = theme.fg("accent", theme.bold(title));
+		return [`${left}${" ".repeat(width - visibleWidth(left) - visibleWidth(right))}${right}`];
+	}
+	// Drop statistics before shortening context, and never sacrifice the resource name for a path.
+	const parts = title.split(" / ");
+	const primary = primaryTitle ?? parts.at(-1) ?? title;
+	const candidates = [title, parts.slice(-2).join(" / "), `… / ${primary}`, primary];
+	const tailWidth = Math.max(0, Math.ceil((width - 1) * 0.65));
+	const shortened = width > 1
+		? `${sliceByColumn(primary, 0, width - tailWidth - 1)}…${sliceByColumn(primary, Math.max(0, visibleWidth(primary) - tailWidth), tailWidth)}` : width > 0 ? "…" : "";
+	const fitted = candidates.find((candidate) => visibleWidth(candidate) <= width) ?? shortened;
+	return [theme.fg("accent", theme.bold(fitted))];
 }
 
 export function renderTabs(theme: BrowserTheme, width: number, category: ResourceCategory, sortMode?: keyof typeof SORT_MODE_LABELS): string[] {
@@ -33,19 +44,8 @@ export function renderTabs(theme: BrowserTheme, width: number, category: Resourc
 	return [truncateToWidth(`${tabs}  ${title}`, width, "…")];
 }
 
-export function renderSearch(
-	theme: BrowserTheme,
-	width: number,
-	mode: "packageGroups" | "packageItems" | "list",
-	packageContentsCategory: PackageContentCategory,
-	inputText: string,
-): string[] {
-	const label = mode === "packageGroups"
-		? "Search in package:"
-		: mode === "packageItems"
-			? `Search in ${CATEGORY_LABELS[packageContentsCategory].toLowerCase()}:`
-			: "Search:";
-	return [truncateToWidth(`${theme.fg("muted", label)} ${inputText}`, width, "…")];
+export function renderSearch(theme: BrowserTheme, width: number, inputText: string): string[] {
+	return [truncateToWidth(`${theme.fg("muted", "Search:")} ${inputText}`, width, "…")];
 }
 
 export function renderListPage(args: {
@@ -56,16 +56,26 @@ export function renderListPage(args: {
 	maxVisible: number;
 	isPinned: (item: ResourceItem) => boolean;
 	formatPackageToggleState: (item: ResourceItem) => string;
+	context?: "category" | "package";
+	emptyMessage?: string;
 	formatBinaryToggle: (enabled: boolean, bold?: boolean) => string;
 }): string[] {
 	const { theme, width, entries, selectedIndex, maxVisible, isPinned, formatPackageToggleState, formatBinaryToggle } = args;
 	if (entries.length === 0) {
-		return [theme.fg("muted", "  Nothing matches the current view")];
+		return [theme.fg("muted", `  ${args.emptyMessage ?? "Nothing matches the current view"}`)];
 	}
 
 	const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), entries.length - maxVisible));
 	const endIndex = Math.min(entries.length, startIndex + maxVisible);
 	const lines: string[] = [];
+	const nameCounts = new Map<string, number>();
+	if (args.context === "package") {
+		for (const entry of entries) {
+			if (entry.kind === "resource-group") continue;
+			const key = `${entry.item.category}:${entry.item.name.toLowerCase()}`;
+			nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+		}
+	}
 
 	for (let index = startIndex; index < endIndex; index++) {
 		const entry = entries[index]!;
@@ -97,28 +107,35 @@ export function renderListPage(args: {
 		}
 		const item = entry.item;
 		const toggle = isPackageItem(item) ? formatPackageToggleState(item)
-			: isMcpItem(item) ? theme.fg(item.configState === "error" ? "error" : "muted", `[${item.configState === "unknown" ? "runtime" : item.configState === "error" ? "error" : `config:${item.configState === "enabled" ? "on" : "off"}`}]`)
-				: formatBinaryToggle(item.enabled, true);
+			: isMcpItem(item) && item.configState === "error" ? theme.fg("error", theme.bold("[!]"))
+				: isMcpItem(item) && item.configState === "unknown" ? theme.fg("dim", theme.bold("[?]"))
+					: formatBinaryToggle(item.enabled, true);
 		const pinBadge = isPinned(item) ? theme.fg("accent", "[pin] ") : "";
-		const packageBadge = isContainedResource(item) ? theme.fg("accent", theme.bold("[pkg] ")) : "";
+		const packageBadge = args.context !== "package" && isContainedResource(item) ? theme.fg("accent", theme.bold("[pkg] ")) : "";
 		const overrideBadge = item.category === "tools" && item.overridesBuiltin ? theme.fg("warning", "[override] ") : "";
-		const sessionBadge = item.category === "tools" && !item.builtin ? theme.fg("dim", " [session]") : "";
+		const sessionBadge = (item.category === "tools" && !item.builtin) || (isMcpItem(item) && item.toggleMode === "registration")
+			? theme.fg("dim", " [session]") : "";
 		const exposureBadge = item.category === "tools" && item.exposure !== "direct"
 			? theme.fg("dim", ` [${item.exposure}]`) : "";
 		const packageVersion = isPackageItem(item) && item.version ? theme.fg("dim", ` @${item.version}`) : "";
-		const displayName = isPackageItem(item) ? formatResourceSourceLabel(item) : isMcpItem(item) ? `${item.name} · ${item.toolNames.length} visible tools` : item.name;
+		const duplicate = (nameCounts.get(`${item.category}:${item.name.toLowerCase()}`) ?? 0) > 1;
+		const disambiguation = duplicate && item.packageRelativePath ? theme.fg("dim", ` · ${item.packageRelativePath}`) : "";
+		const displayName = (isPackageItem(item) ? formatResourceSourceLabel(item) : item.name) + disambiguation;
+		const toolSummary = isMcpItem(item) && item.configState !== "error" && item.enabled
+			? theme.fg("dim", item.toolsLoading ? " [fetching tools…]" : ` [${item.toolNames.length} tools]`) : "";
 		const childIndent = entry.kind === "resource-child" ? theme.fg("dim", "   ↳ ") : "";
-		const nameText = `${childIndent}${pinBadge}${packageBadge}${overrideBadge}${displayName}${sessionBadge}${exposureBadge}${packageVersion}`;
+		const nameText = `${childIndent}${pinBadge}${packageBadge}${overrideBadge}${displayName}${sessionBadge}${exposureBadge}${toolSummary}${packageVersion}`;
 		const name = selected ? theme.bold(nameText) : theme.fg("text", nameText);
 		const itemScope = item.scope === "project"
 			? theme.fg("success", "project")
 			: item.scope === "user"
 				? theme.fg("warning", "user")
 				: theme.fg("muted", "session");
-		const right = entry.kind === "resource-child"
-			? ""
-			: `${itemScope}  ${theme.fg("dim", formatResourceSourceLabel(item))}`;
-		const left = `${marker} ${toggle} ${name}`;
+		const right = args.context === "package"
+			? theme.fg("muted", CATEGORY_LABELS[item.category].replace(/s$/, ""))
+			: entry.kind === "resource-child" ? "" : `${itemScope}  ${theme.fg("dim", formatResourceSourceLabel(item))}`;
+		const left = truncateToWidth(`${marker} ${toggle} ${name}`,
+			args.context === "package" ? Math.max(1, width - visibleWidth(right) - 1) : width, "…");
 		const spacing = right ? Math.max(1, width - visibleWidth(left) - visibleWidth(right)) : 0;
 		let line = truncateToWidth(right ? `${left}${" ".repeat(spacing)}${right}` : left, width, "…");
 		line = selected ? theme.bg("selectedBg", line) : theme.fg("text", line);
@@ -142,6 +159,12 @@ export function renderDetailPage(args: {
 	width: number;
 	item: ResourceItem | undefined;
 	detailSelectedIndex: number;
+	contentOffset?: number;
+	parameterOffset?: number;
+	descriptionExpanded?: boolean;
+	onDescriptionLayout?: (expandable: boolean) => void;
+	maxContentLines?: number;
+	onContentLayout?: (total: number, visible: number, offset: number) => void;
 	getDetailActions: (item: ResourceItem) => DetailAction[];
 	getDetailActionLabel: (action: DetailAction, item: ResourceItem, selected: boolean) => string;
 	getPersistedActionHint: (action: DetailAction) => string | undefined;
@@ -163,97 +186,84 @@ export function renderDetailPage(args: {
 	} = args;
 	if (!item) return [theme.fg("muted", "Nothing selected")];
 
+	const field = (label: string, value: string) => truncateToWidth(`${theme.fg("muted", label)}: ${value}`, width, "…");
 	const lines = item.category === "prompts" && "argumentHint" in item && item.argumentHint
-		? [truncateToWidth(`${theme.fg("muted", "Argument Hint")}: ${item.argumentHint}`, width, "…")]
+		? [field("Argument Hint", item.argumentHint)]
 		: [];
 	if (isPackageItem(item)) {
-		if (item.version) lines.push(truncateToWidth(`${theme.fg("muted", "Version")}: ${item.version}`, width, "…"));
+		if (item.version) lines.push(field("Version", item.version));
 		const enabledSummary = formatPackageEnabledSummary(item);
-		if (enabledSummary) lines.push(truncateToWidth(`${theme.fg("muted", "Enabled Resources")}: ${enabledSummary}`, width, "…"));
+		if (enabledSummary) lines.push(field("Enabled Resources", enabledSummary));
 		const counts = formatPackageCounts(item, true);
-		if (counts) lines.push(truncateToWidth(`${theme.fg("muted", "Resources")}: ${counts}`, width, "…"));
+		if (counts) lines.push(field("Resources", counts));
 	}
 	if (isMcpItem(item) && item.configState !== "error") {
-		const metadata = [
-			`Config: ${item.configState} · ${item.sourceLabel} (not connection status)`,
-			`Transport: ${item.transport ?? "unknown"} · Exposure: ${item.exposure ?? "unknown"}`,
-			`Tools: ${item.activeToolCount}/${item.toolNames.length} registered tools active`,
-			...item.toolNames.slice(0, 3).map((name) => `  ${name}`),
-			...(item.toolNames.length > 3 ? [`  … ${item.toolNames.length - 3} more in Browse Server Tools`] : []),
-			"Resources: not queried; per-server inventory is not exposed by Pi UI API",
-			item.resourceTools.length > 0 ? `Shared access: ${item.resourceTools.join(", ")}` : "Shared resource tools: not registered yet",
-		];
-		lines.push(...metadata.map((line) => truncateToWidth(line, width, "…")));
+		const toolState = item.toolsLoading ? "Fetching tools…"
+			: !item.enabled && item.toolNames.length === 0 ? "None observed · disabled in configuration"
+			: `${item.activeToolCount}/${item.toolNames.length} active · registered`;
+		lines.push(field("Tools", toolState));
+		lines.push(field("Transport", `${item.transport ?? "unknown"} · ${theme.fg("muted", "Exposure")}: ${item.exposure ?? "unknown"}`));
+		lines.push(field("Resources", `Not queried${item.resourceTools.length > 0 ? " · shared access available" : ""}`));
+		lines.push(...wrapTextWithAnsi(theme.fg("dim", "Switches control configuration, not connection status. Manage connections in /mcp."), Math.max(1, width))
+			.map((line) => truncateToWidth(line, width, "…")));
 	}
-	lines.push("");
-	lines.push(truncateToWidth(theme.fg("accent", theme.bold("Description")), width, "…"));
-	lines.push(...renderDescriptionBlock(theme, item.description, width));
-	lines.push("");
-	lines.push(theme.fg("accent", theme.bold("Actions")));
+	const preview = item.category === "prompts" ? item.promptPreview : undefined;
+	const description = preview && promptRepeatsDescription(preview, item.description)
+		? [] : renderDescriptionBlock(theme, item.description, width);
+	const expandable = description.length > DESCRIPTION_PREVIEW_LINES;
+	args.onDescriptionLayout?.(expandable);
+	if (description.length > 0) {
+		if (lines.length > 0) lines.push("");
+		let hint = expandable ? ` · o ${args.descriptionExpanded ? "collapse" : "expand"}` : "";
+		if (visibleWidth("Description" + hint) > width && expandable) hint = ` · o ${args.descriptionExpanded ? "−" : "+"}`;
+		lines.push(truncateToWidth(theme.fg("text", theme.bold("Description")) + theme.fg("dim", hint), width, "…"));
+		const shown = expandable && !args.descriptionExpanded ? description.slice(0, DESCRIPTION_PREVIEW_LINES) : description;
+		if (expandable && !args.descriptionExpanded) {
+			shown[shown.length - 1] = truncateToWidth(shown.at(-1)!, Math.max(0, width - 1), "") + theme.fg("dim", "…");
+		}
+		lines.push(...shown);
+	}
+	const extra = item.category === "tools" ? renderToolParameters(theme, item.parameters, width, args.parameterOffset)
+		: preview !== undefined ? renderPromptPreview(theme, preview, width, item.category === "prompts" && item.promptPreviewTruncated) : [];
+	if (extra.length > 0) {
+		if (lines.length > 0) lines.push("");
+		lines.push(...extra);
+	}
+	const maxContentLines = Math.max(2, args.maxContentLines ?? Infinity);
+	const moreParameters = item.category === "tools" && (item.parameters?.length ?? 0) > TOOL_PARAMETER_WINDOW_SIZE;
+	const needsScrollHint = moreParameters || lines.length > maxContentLines;
+	const visible = Math.min(lines.length, maxContentLines - Number(needsScrollHint));
+	const offset = Math.max(0, Math.min(args.contentOffset ?? 0, lines.length - visible));
+	args.onContentLayout?.(lines.length, visible, offset);
+	const result = lines.slice(offset, offset + visible);
+	if (needsScrollHint) result.push(truncateToWidth(theme.fg("dim", "j↓ k↑ scroll"), width, "…"));
+	if (result.length > 0) result.push("");
+	result.push(theme.fg("text", theme.bold("Actions")));
 	const actions = getDetailActions(item);
 	for (let i = 0; i < actions.length; i++) {
 		const action = actions[i]!;
 		const selected = i === detailSelectedIndex;
 		const label = getDetailActionLabel(action, item, selected);
 		const actionHint = selected ? getPersistedActionHint(action) ?? getDetailActionHint(action, item) : getPersistedActionHint(action);
-		let line = `${selected ? theme.fg("accent", "› ") : "  "}${label}`;
-		if (actionHint) line += theme.fg("dim", "  ·  ") + actionHint;
-		line = truncateToWidth(line, width, "…");
-		if (selected) line = theme.bg("selectedBg", line);
-		lines.push(line);
-	}
-	return lines;
-}
-
-export function renderPackageGroupsPage(args: {
-	theme: BrowserTheme;
-	width: number;
-	pkg: ResourceItem | undefined;
-	entries: PackageGroupEntry[];
-	selectedIndex: number;
-	isPinned: (item: ResourceItem) => boolean;
-	getItemsForCategory: (category: PackageContentCategory) => ResourceItem[];
-	formatBinaryToggle: (enabled: boolean, bold?: boolean) => string;
-}): string[] {
-	const { theme, width, pkg, entries, selectedIndex, isPinned, getItemsForCategory, formatBinaryToggle } = args;
-	if (!pkg || pkg.category !== "packages") return [theme.fg("muted", "No package selected")];
-	const lines = [""];
-	if (entries.length === 0) {
-		lines.push(theme.fg("muted", "No package contents match the current search"));
-		return lines;
-	}
-	for (const [index, entry] of entries.entries()) {
-		const selected = index === selectedIndex;
-		let line = "";
-		if (entry.kind === "category") {
-			const items = getItemsForCategory(entry.category);
-			const enabledCount = items.filter((item) => item.enabled).length;
-			const countColor = items.length === 0 ? "dim" : enabledCount === items.length ? "success" : enabledCount === 0 ? "dim" : "warning";
-			line = `${selected ? theme.fg("accent", "› ") : "  "}${CATEGORY_LABELS[entry.category]} (${theme.fg(countColor, `${enabledCount}/${items.length}`)})`;
-		} else if (entry.kind === "item") {
-			const toggle = formatBinaryToggle(entry.item.enabled);
-			const pinBadge = isPinned(entry.item) ? theme.fg("accent", "[pin]") : "";
-			const exposure = canExposeResource(entry.item)
-				? entry.item.exposed
-					? theme.fg("accent", "[shown]")
-					: theme.fg("dim", "[hidden]")
-				: "";
-			const label = entry.item.packageRelativePath ?? entry.item.name;
-			line = `  ${selected ? theme.fg("accent", "›") : " "}   ${toggle}${exposure ? ` ${exposure}` : ""}${pinBadge ? ` ${pinBadge}` : ""} ${theme.fg("dim", label)}`;
-		} else {
-			line = `  ${selected ? theme.fg("accent", "›") : " "}   ${theme.fg("accent", `… more (${entry.remaining} more, press Enter to open full list)`)}`;
+		const marker = selected ? theme.fg("accent", "› ") : "  ";
+		const labelLines = wrapTextWithAnsi(label, Math.max(1, width - 2));
+		for (const [index, labelLine] of labelLines.entries()) {
+			let line = `${index === 0 ? marker : "  "}${labelLine}`;
+			const hintWidth = width - visibleWidth(line) - 3;
+			// A clipped fragment of a hint is less useful than a clean, complete action label.
+			if (labelLines.length === 1 && actionHint && hintWidth >= 16) {
+				line += theme.fg("dim", " · ") + truncateToWidth(actionHint, hintWidth, "…");
+			}
+			line = truncateToWidth(line, width, "…");
+			result.push(selected ? theme.bg("selectedBg", line) : line);
 		}
-		line = truncateToWidth(line, width, "…");
-		if (selected) line = theme.bg("selectedBg", line);
-		lines.push(line);
 	}
-	return lines;
+	return result;
 }
 
 export function renderPackageItemsPage(args: {
 	theme: BrowserTheme;
 	width: number;
-	pkg: ResourceItem | undefined;
 	items: ResourceItem[];
 	selectedIndex: number;
 	maxVisible: number;
@@ -261,43 +271,32 @@ export function renderPackageItemsPage(args: {
 	emptyMessage: string;
 	formatBinaryToggle: (enabled: boolean, bold?: boolean) => string;
 }): string[] {
-	const { theme, width, pkg, items, selectedIndex, maxVisible, isPinned, emptyMessage, formatBinaryToggle } = args;
-	if (!pkg || pkg.category !== "packages") return [theme.fg("muted", "No package selected")];
-	const lines = [""];
-	if (items.length === 0) {
-		lines.push(theme.fg("muted", emptyMessage));
-		return lines;
-	}
-	const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), items.length - maxVisible));
-	const endIndex = Math.min(items.length, startIndex + maxVisible);
-	for (let index = startIndex; index < endIndex; index++) {
-		const item = items[index]!;
-		const selected = index === selectedIndex;
-		const marker = selected ? theme.fg("accent", "▌") : theme.fg("dim", " ");
-		const toggle = formatBinaryToggle(item.enabled, true);
-		const pinBadge = isPinned(item) ? theme.fg("accent", "[pin] ") : "";
-		const exposure = canExposeResource(item)
-			? item.exposed
-				? theme.fg("accent", theme.bold("[shown]"))
-				: theme.fg("dim", "[hidden]")
-			: "";
-		const primary = `${marker} ${toggle}${exposure ? ` ${exposure}` : ""} ${pinBadge}${item.name}`;
-		const label = theme.fg("dim", item.packageRelativePath ?? ("path" in item ? item.path : undefined) ?? item.name);
-		const spacing = Math.max(1, width - visibleWidth(primary) - visibleWidth(label));
-		let line = truncateToWidth(`${primary}${" ".repeat(spacing)}${label}`, width, "…");
-		line = selected ? theme.bg("selectedBg", line) : theme.fg("text", line);
-		lines.push(line);
-	}
-	if (startIndex > 0 || endIndex < items.length) {
-		lines.push(theme.fg("dim", truncateToWidth(`(${selectedIndex + 1}/${items.length})`, width, "")));
-	}
-	return lines;
+	return renderListPage({
+		...args,
+		context: "package",
+		entries: args.items.map((item) => ({ kind: "resource", item })),
+		formatPackageToggleState: () => "", // Package contents contain leaf resources only.
+	});
 }
 
 export function renderFooterWithSettingsHint(theme: BrowserTheme, width: number, text: string): string {
-	const base = theme.fg("dim", text);
-	const hint = theme.fg("accent", theme.bold("S Settings"));
-	return truncateToWidth(`${base}${theme.fg("dim", " · ")}${hint}`, width, "…");
+	const parts = [...text.split(" · "), "S Settings"];
+	const format = (items: string[]) => items.map((item) => item === "S Settings"
+		? theme.fg("accent", theme.bold(item)) : theme.fg("dim", item)).join(theme.fg("dim", " · "));
+	if (visibleWidth(parts.join(" · ")) <= width) return format(parts);
+	// Keep the primary operation and escape route; add optional hints only as complete phrases.
+	const escape = parts.find((item) => item.startsWith("Esc "));
+	let primary = parts[0] ?? "";
+	const compact = primary.startsWith("Enter ") ? "Enter" : primary.startsWith("Space ") ? "Space" : primary;
+	if (escape && visibleWidth(`${primary} · ${escape}`) > width) primary = compact;
+	const kept = [primary];
+	if (escape && visibleWidth(`${primary} · ${escape}`) <= width) kept.push(escape);
+	if (visibleWidth(kept.join(" · ")) > width) return theme.fg("dim", width > 0 ? "…" : "");
+	for (const part of ["S Settings", ...parts.slice(1)]) {
+		if (kept.includes(part)) continue;
+		if (visibleWidth([...kept, part].join(" · ")) <= width) kept.push(part);
+	}
+	return format(kept);
 }
 
 export function renderSettingsTabs(theme: BrowserTheme, width: number, section: SettingsSection): string[] {
@@ -318,7 +317,10 @@ export function renderSettingsSearch(theme: BrowserTheme, width: number, input: 
 }
 
 export function renderDescriptionBlock(theme: BrowserTheme, text: string, width: number): string[] {
-	const wrapped = wrapTextWithAnsi(theme.fg("text", text), Math.max(10, width - 2));
+	// Trim blank lines at the edges, not indentation or paragraph spacing inside the content.
+	const content = text.replace(/\r\n?/g, "\n").replace(/^(?:[^\S\n]*\n)+/, "").replace(/(?:\n[^\S\n]*)+$/, "");
+	if (!content.trim()) return [];
+	const wrapped = wrapTextWithAnsi(theme.fg("text", content), Math.max(10, width - 2));
 	return wrapped.map((line) => truncateToWidth(`  ${line}`, width, "…"));
 }
 
